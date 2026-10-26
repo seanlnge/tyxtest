@@ -55,15 +55,16 @@ export async function generateCommand(options: {
   const model = resolveModel(options.model, () => createModelClient(requireModels(config).indexModel, env));
   const files = listSourceFiles(options.cwd);
   const routes = routerFiles(files);
-  const bundle = readFileBundle(options.cwd, (routes.length > 0 ? routes : files).slice(0, 30), 80_000);
+  const bundle = readFileBundle(options.cwd, (routes.length > 0 ? routes : files).slice(0, 20), 40_000);
   const response = await model.complete({
     purpose: "generate",
     system: [
-      "You propose a product surface tree for a TypeScript codebase.",
+      "You propose a product surface tree from what this software does for its users.",
+      "For a web app, surfaces are screens. For a CLI, commands. For a library, its public API. For a server, its endpoints.",
       'Reply with JSON only: {"surfaces":[{"slug":"login-page","name":"Login page","description":"...","entry":"src/pages/login.tsx","tests":[{"id":"submit-exists","text":"There is a submit button"}],"children":[]}]}',
       "Every surface needs an entry path that exists in the file list and at least one test.",
     ].join(" "),
-    prompt: `Source files:\n${files.join("\n") || "(none)"}\n\nRouter and page files:\n${bundle || "(none found)"}`,
+    prompt: `${readProjectBrief(options.cwd)}\n\nSource files:\n${files.join("\n") || "(none)"}\n\nSample source:\n${bundle || "(none)"}`,
   });
 
   const accepted = await confirmTree(options.prompter, flatten(parseProposal(response)), options.yes === true);
@@ -192,6 +193,28 @@ function formatTree(surfaces: FlatSurface[]): string {
     }
   }
   return lines.join("\n");
+}
+
+function readProjectBrief(cwd: string): string {
+  const packagePath = path.join(cwd, "package.json");
+  let entryPoints = "(no package.json)";
+  if (fs.existsSync(packagePath)) {
+    const parsed = JSON.parse(fs.readFileSync(packagePath, "utf8")) as Record<string, unknown>;
+    entryPoints = JSON.stringify(
+      {
+        name: parsed.name,
+        description: parsed.description,
+        main: parsed.main,
+        bin: parsed.bin,
+        exports: parsed.exports,
+      },
+      null,
+      2,
+    );
+  }
+  const readmeName = ["README.md", "readme.md", "README"].find((name) => fs.existsSync(path.join(cwd, name)));
+  const readme = readmeName ? fs.readFileSync(path.join(cwd, readmeName), "utf8").slice(0, 8_000) : "(no README)";
+  return `Package entry points (main, bin, exports):\n${entryPoints}\n\nREADME:\n${readme}`;
 }
 
 function resolveModel(source: ModelSource | undefined, fallback: () => ModelClient): ModelClient {

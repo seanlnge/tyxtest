@@ -12,6 +12,7 @@ const base = {
   testText: "There is a submit button",
   closureHash: "closure-hash",
   lockfileHash: "lockfile-hash",
+  optionOrder: ["pass", "fail"],
 };
 
 test("cache keys change when any component changes", () => {
@@ -22,6 +23,8 @@ test("cache keys change when any component changes", () => {
   assert.notEqual(key, cacheKey({ ...base, testText: "Email is validated before submit" }));
   assert.notEqual(key, cacheKey({ ...base, closureHash: "other-closure" }));
   assert.notEqual(key, cacheKey({ ...base, lockfileHash: "other-lock" }));
+  assert.notEqual(key, cacheKey({ ...base, optionOrder: ["fail", "pass"] }));
+  assert.equal(key, cacheKey({ ...base, optionOrder: ["pass", "fail"] }));
 });
 
 test("lockfile hash changes when the lockfile changes", () => {

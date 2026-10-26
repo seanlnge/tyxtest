@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ModelConfig, TyxtestConfig } from "./types.js";
+import type { ModelConfig, ModelKind, Thresholds, TyxtestConfig } from "./types.js";
 
 const LITERAL_KEY = /sk-[A-Za-z0-9_-]{8,}/;
 const ENTRY_MODES = ["ask-plain", "ask-entry", "required"] as const;
@@ -98,12 +98,18 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
 
   return {
     indexModel: pickModel(raw.indexModel, "indexModel"),
-    runnerModel: pickModel(raw.runnerModel, "runnerModel"),
+    runnerModel: pickModel(raw.runnerModel, "runnerModel", "decision"),
+    escalate: pickBoolean(raw.escalate, true, "escalate"),
+    escalateModel: pickModel(raw.escalateModel, "escalateModel"),
+    thresholds: pickThresholds(raw.thresholds),
+    ignoreUnchanged: pickBoolean(raw.ignoreUnchanged, true, "ignoreUnchanged"),
+    baseRef: pickBaseRef(raw.baseRef),
     entryMode: pickEnum(raw.entryMode, ENTRY_MODES, "ask-plain", "entryMode"),
     nonInteractive: pickEnum(raw.nonInteractive, NON_INTERACTIVE, "fail", "nonInteractive"),
     reruns: pickReruns(raw.reruns),
     verdictRule: pickVerdictRule(raw.verdictRule),
     unsureBlocks: pickBoolean(raw.unsureBlocks, false, "unsureBlocks"),
+    triage: pickBoolean(raw.triage, false, "triage"),
     closureDepth: pickDepth(raw.closureDepth),
     guards: {
       literalKeyCheck: pickBoolean(guards.literalKeyCheck, true, "guards.literalKeyCheck"),
@@ -112,8 +118,8 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
   };
 }
 
-function pickModel(value: unknown, label: string): ModelConfig | undefined {
-  if (value === undefined) return undefined;
+function pickModel(value: unknown, label: string, defaultKind?: ModelKind): ModelConfig | undefined {
+  if (value === undefined || value === null) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object with provider and model.`);
   }
@@ -128,6 +134,8 @@ function pickModel(value: unknown, label: string): ModelConfig | undefined {
     provider: record.provider.trim(),
     model: record.model.trim(),
   };
+  const kind = pickKind(record.kind, defaultKind, label);
+  if (kind) model.kind = kind;
   if (record.apiKeyEnv !== undefined) {
     if (typeof record.apiKeyEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(record.apiKeyEnv)) {
       throw new Error(`${label}.apiKeyEnv must be an environment variable name.`);
@@ -135,6 +143,36 @@ function pickModel(value: unknown, label: string): ModelConfig | undefined {
     model.apiKeyEnv = record.apiKeyEnv;
   }
   return model;
+}
+
+function pickKind(value: unknown, fallback: ModelKind | undefined, label: string): ModelKind | undefined {
+  const picked = value === undefined ? fallback : value;
+  if (picked === undefined) return undefined;
+  if (picked !== "decision" && picked !== "llm") {
+    throw new Error(`${label}.kind must be decision or llm.`);
+  }
+  return picked;
+}
+
+function pickThresholds(value: unknown): Thresholds {
+  const defaults = { pass: 0.9, fail: 0.1 };
+  if (value === undefined || value === null) return defaults;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("thresholds must be an object with pass and fail.");
+  }
+  const record = value as Record<string, unknown>;
+  const pass = record.pass === undefined ? defaults.pass : record.pass;
+  const fail = record.fail === undefined ? defaults.fail : record.fail;
+  if (typeof pass !== "number" || typeof fail !== "number" || pass <= fail || pass > 1 || fail < 0) {
+    throw new Error("thresholds.pass must be greater than thresholds.fail, both between 0 and 1.");
+  }
+  return { pass, fail };
+}
+
+function pickBaseRef(value: unknown): string {
+  const picked = value === undefined ? "origin/main" : value;
+  if (typeof picked !== "string" || picked.trim() === "") throw new Error("baseRef must be a git ref.");
+  return picked.trim();
 }
 
 function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T, label: string): T {

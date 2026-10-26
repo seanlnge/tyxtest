@@ -10,6 +10,7 @@ export interface CacheKeyInput {
   testText: string;
   closureHash: string;
   lockfileHash: string;
+  optionOrder: readonly string[];
 }
 
 export interface CacheHit {
@@ -24,7 +25,9 @@ export interface VerdictCache {
 }
 
 export function cacheKey(input: CacheKeyInput): string {
-  return hashContent([input.testId, input.testText, input.closureHash, input.lockfileHash].join("\0"));
+  return hashContent(
+    [input.testId, input.testText, input.closureHash, input.lockfileHash, input.optionOrder.join("\0")].join("\0"),
+  );
 }
 
 export function emptyCache(): VerdictCache {

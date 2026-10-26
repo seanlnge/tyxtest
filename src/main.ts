@@ -17,7 +17,7 @@ Usage:
 setup     write tyxtest/tyxtest.config.json, ignore .env, mark .index.json merge=ours
 generate  propose the first surface tree when tyxtest/ has no surfaces
 index     map each surface onto its import closure and write .index.json
-run       judge each test and write JSON + JUnit under .tyxtest/
+run       judge each test. A decision model scores p(pass); an LLM runs only on escalation, or when runnerModel.kind is llm
 
 Config lives in tyxtest/tyxtest.config.json and names env vars. It must not contain API keys.
 `;

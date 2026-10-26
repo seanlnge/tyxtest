@@ -12,9 +12,11 @@ const ANSWERS = [
   "anthropic",
   "claude-strong",
   "TYXTEST_INDEX_KEY",
-  "openai",
-  "gpt-cheap",
+  "decision",
+  "typesafe",
+  "jev",
   "TYXTEST_RUN_KEY",
+  "",
   "ask-entry",
   "no",
 ];
@@ -47,16 +49,22 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   assert.doesNotMatch(configText, /sk-[A-Za-z0-9_-]{8,}/);
   const config = JSON.parse(configText) as {
     entryMode: string;
-    indexModel: { provider: string; apiKeyEnv: string };
-    runnerModel: { provider: string; model: string; apiKeyEnv: string };
+    indexModel: { provider: string; apiKeyEnv: string; kind?: string };
+    runnerModel: { kind: string; provider: string; model: string; apiKeyEnv: string };
+    escalateModel: unknown;
+    ignoreUnchanged: boolean;
     guards: { gitignoreEnv: boolean };
   };
   assert.equal(config.entryMode, "ask-entry");
+  assert.equal(config.indexModel.kind, undefined);
   assert.equal(config.indexModel.provider, "anthropic");
   assert.equal(config.indexModel.apiKeyEnv, "TYXTEST_INDEX_KEY");
-  assert.equal(config.runnerModel.provider, "openai");
-  assert.equal(config.runnerModel.model, "gpt-cheap");
+  assert.equal(config.runnerModel.kind, "decision");
+  assert.equal(config.runnerModel.provider, "typesafe");
+  assert.equal(config.runnerModel.model, "jev");
   assert.equal(config.runnerModel.apiKeyEnv, "TYXTEST_RUN_KEY");
+  assert.equal(config.escalateModel, null);
+  assert.equal(config.ignoreUnchanged, true);
   assert.equal(config.guards.gitignoreEnv, true);
   assert.ok(prompter.warnings.some((warning) => warning.includes("TYXTEST_RUN_KEY")));
   assert.equal(

@@ -23,6 +23,10 @@ export function formatReport(results: ReportedTest[], unsureBlocks: boolean): st
   for (const [surface, tests] of groups) {
     lines.push(surface);
     for (const test of tests) {
+      if (test.verdict === "skipped") {
+        lines.push(`  skipped (unchanged)  [${test.id}] ${test.text}`);
+        continue;
+      }
       const cached = test.cached ? " (cached)" : "";
       lines.push(`  ${test.verdict}  [${test.id}] ${test.text}${cached}`);
       for (const citation of test.evidence) {
@@ -33,7 +37,9 @@ export function formatReport(results: ReportedTest[], unsureBlocks: boolean): st
     lines.push("");
   }
   const counts = countVerdicts(results);
-  lines.push(`${counts.pass} pass, ${counts.fail} fail, ${counts.unsure} unsure`);
+  lines.push(
+    `${counts.pass} pass, ${counts.fail} fail, ${counts.unsure} unsure${counts.skipped ? `, ${counts.skipped} skipped (unchanged)` : ""}`,
+  );
   if (counts.fail > 0) lines.push("fail blocks CI");
   if (counts.unsure > 0) {
     lines.push(unsureBlocks ? "unsure blocks CI" : "unsure warns and does not block CI");
@@ -49,11 +55,12 @@ export function writeReports(dir: string, results: ReportedTest[], unsureBlocks:
   return { json, junit };
 }
 
-function countVerdicts(results: ReportedTest[]): { pass: number; fail: number; unsure: number } {
+function countVerdicts(results: ReportedTest[]): { pass: number; fail: number; unsure: number; skipped: number } {
   return {
     pass: results.filter((result) => result.verdict === "pass").length,
     fail: results.filter((result) => result.verdict === "fail").length,
     unsure: results.filter((result) => result.verdict === "unsure").length,
+    skipped: results.filter((result) => result.verdict === "skipped").length,
   };
 }
 
@@ -66,11 +73,13 @@ function renderJUnit(results: ReportedTest[], unsureBlocks: boolean): string {
       const name = escapeXml(result.id);
       const classname = escapeXml(result.surface);
       const body =
-        result.verdict === "fail" || (result.verdict === "unsure" && unsureBlocks)
-          ? `<failure message="${escapeXml(result.verdict)}">${escapeXml(result.explanation)}</failure>`
-          : result.verdict === "unsure"
-            ? `<system-out>${escapeXml(result.explanation || "unsure")}</system-out>`
-            : "";
+        result.verdict === "skipped"
+          ? `<skipped message="unchanged"/>`
+          : result.verdict === "fail" || (result.verdict === "unsure" && unsureBlocks)
+            ? `<failure message="${escapeXml(result.verdict)}">${escapeXml(result.explanation)}</failure>`
+            : result.verdict === "unsure"
+              ? `<system-out>${escapeXml(result.explanation || "unsure")}</system-out>`
+              : "";
       return `    <testcase name="${name}" classname="${classname}">${body}</testcase>`;
     })
     .join("\n");

@@ -2,17 +2,19 @@ import { hashContent } from "./hash.js";
 import { normalizeRel } from "./paths.js";
 import type { Citation, Verdict } from "./types.js";
 
+type JudgedVerdict = Exclude<Verdict, "skipped">;
+
 export interface IndexedFile {
   path: string;
   hash: string;
 }
 
 export function applyEvidenceCheck(
-  verdict: Verdict,
+  verdict: JudgedVerdict,
   evidence: Citation[],
   closure: IndexedFile[],
   files: Record<string, string>,
-): Verdict {
+): JudgedVerdict {
   if (verdict !== "pass") return verdict;
   if (!evidenceValid(evidence, closure, files)) return "unsure";
   return "pass";

@@ -14,6 +14,12 @@ test("config defaults", () => {
   assert.equal(config.verdictRule, "worst");
   assert.equal(config.unsureBlocks, false);
   assert.equal(config.closureDepth, null);
+  assert.equal(config.escalate, true);
+  assert.equal(config.escalateModel, undefined);
+  assert.deepEqual(config.thresholds, { pass: 0.9, fail: 0.1 });
+  assert.equal(config.ignoreUnchanged, true);
+  assert.equal(config.baseRef, "origin/main");
+  assert.equal(config.triage, false);
   assert.deepEqual(config.guards, { literalKeyCheck: true, gitignoreEnv: true });
   assert.equal(config.indexModel, undefined);
   assert.equal(config.runnerModel, undefined);
@@ -39,6 +45,7 @@ test("config keeps explicit values and fills the other guard", () => {
   assert.equal(config.guards.gitignoreEnv, true);
   assert.equal(config.indexModel?.apiKeyEnv, "TYXTEST_INDEX_KEY");
   assert.equal(config.runnerModel?.provider, "openai");
+  assert.equal(config.runnerModel?.kind, "decision");
 });
 
 test("config rejects a literal API key and does not echo it", () => {

@@ -19,7 +19,8 @@ function project(extraConfig: Record<string, unknown> = {}): string {
     path.join(cwd, "tyxtest/tyxtest.config.json"),
     JSON.stringify({
       indexModel: { provider: "ollama", model: "index" },
-      runnerModel: { provider: "ollama", model: "runner" },
+      runnerModel: { kind: "llm", provider: "ollama", model: "runner" },
+      ignoreUnchanged: false,
       reruns: 2,
       ...extraConfig,
     }),

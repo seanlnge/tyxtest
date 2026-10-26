@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { aggregateVerdicts, exitCodeFor } from "../src/verdict.js";
+import { aggregateVerdicts, exitCodeFor, thresholdVerdict } from "../src/verdict.js";
+
+test("p(pass) thresholds: pass, fail, and between", () => {
+  const thresholds = { pass: 0.9, fail: 0.1 };
+  assert.equal(thresholdVerdict(0.9, thresholds), "pass");
+  assert.equal(thresholdVerdict(0.95, thresholds), "pass");
+  assert.equal(thresholdVerdict(0.1, thresholds), "fail");
+  assert.equal(thresholdVerdict(0.05, thresholds), "fail");
+  assert.equal(thresholdVerdict(0.5, thresholds), "between");
+  assert.equal(thresholdVerdict(0.11, thresholds), "between");
+  assert.equal(thresholdVerdict(0.89, thresholds), "between");
+});
 
 test("verdict aggregation: first pass", () => {
   assert.equal(aggregateVerdicts(["pass"]), "pass");
