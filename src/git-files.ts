@@ -4,8 +4,10 @@ import path from "node:path";
 
 export const INDEX_MERGE_RULE = "tyxtest/**/.index.json merge=ours";
 
+export const PENDING_GITIGNORE = "tyxtest/.pending.json";
+
 export function ensureEnvGitignore(cwd: string): void {
-  ensureLines(path.join(cwd, ".gitignore"), [".env", ".tyxtest/"]);
+  ensureLines(path.join(cwd, ".gitignore"), [".env", ".tyxtest/", PENDING_GITIGNORE]);
 }
 
 export function ensureIndexMergeAttributes(cwd: string): void {

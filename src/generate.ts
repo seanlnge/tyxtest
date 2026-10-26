@@ -13,6 +13,11 @@ import { listSourceFiles, readFileBundle, routerFiles } from "./repo-files.js";
 import { backfillTestIds, writeSurface } from "./surface.js";
 import type { ModelClient, ModelSource, TyxtestConfig } from "./types.js";
 
+interface GenerateQuestion {
+  prompt: string;
+  guess?: string;
+}
+
 interface ProposedSurface {
   slug?: string;
   name?: string;
@@ -44,13 +49,13 @@ export async function generateCommand(options: {
       "tyxtest generate refuses to run because tyxtest/ already has surfaces. It only creates the first set of tests.",
     );
   }
-  if (!options.interactive && !options.yes) {
+  const config = options.config ?? loadConfig(options.cwd);
+  const acceptProposal = options.yes === true || (!options.interactive && config.nonInteractive === "search");
+  if (!options.interactive && !acceptProposal) {
     throw new Error(
       "tyxtest generate needs a terminal to accept the surface tree. Re-run with --yes to accept the proposal.",
     );
   }
-
-  const config = options.config ?? loadConfig(options.cwd);
   const env = loadEnvFile(options.cwd, options.env ?? process.env);
   const model = resolveModel(options.model, () => createModelClient(requireModels(config).indexModel, env));
   const files = listSourceFiles(options.cwd);
@@ -61,13 +66,24 @@ export async function generateCommand(options: {
     system: [
       "You propose a product surface tree from what this software does for its users.",
       "For a web app, surfaces are screens. For a CLI, commands. For a library, its public API. For a server, its endpoints.",
-      'Reply with JSON only: {"surfaces":[{"slug":"login-page","name":"Login page","description":"...","entry":"src/pages/login.tsx","tests":[{"id":"submit-exists","text":"There is a submit button"}],"children":[]}]}',
+      'Reply with JSON only: {"surfaces":[{"slug":"login-page","name":"Login page","description":"...","entry":"src/pages/login.tsx","tests":[{"id":"submit-exists","text":"There is a submit button"}],"children":[]}],"questions":[{"prompt":"Which component is the login form?","guess":"src/pages/login.tsx"}]}',
+      "Ask questions only when a mapping or the intended behavior is ambiguous. Otherwise return an empty questions array.",
       "Every surface needs an entry path that exists in the file list and at least one test.",
     ].join(" "),
     prompt: `${readProjectBrief(options.cwd)}\n\nSource files:\n${files.join("\n") || "(none)"}\n\nSample source:\n${bundle || "(none)"}`,
   });
 
-  const accepted = await confirmTree(options.prompter, flatten(parseProposal(response)), options.yes === true);
+  const proposal = parseProposal(response);
+  const flags = await askStuckQuestions({
+    prompter: options.prompter,
+    interactive: options.interactive,
+    yes: acceptProposal,
+    nonInteractive: config.nonInteractive,
+    maxQuestions: config.maxQuestions,
+    questions: proposal.questions,
+  });
+  if (flags.length > 0) options.prompter.log(flags.join("\n"));
+  const accepted = await confirmTree(options.prompter, flatten(proposal.surfaces), acceptProposal);
   if (accepted.length === 0) throw new Error("No surfaces left to write.");
   for (const surface of accepted) {
     if (!surface.entry) throw new Error(`Proposed surface "${surface.relativeDir}" has no entry file.`);
@@ -133,10 +149,54 @@ async function confirmTree(prompter: Prompter, surfaces: FlatSurface[], yes: boo
   throw new Error(`Unknown choice "${answer}". Use accept, drop, or edit.`);
 }
 
-function parseProposal(text: string): ProposedSurface[] {
+function parseProposal(text: string): { surfaces: ProposedSurface[]; questions: GenerateQuestion[] } {
   const record = asRecord(parseModelJson(text), "Generate response");
   if (!Array.isArray(record.surfaces)) throw new Error("Generate response is missing surfaces.");
-  return record.surfaces.filter((item): item is ProposedSurface => Boolean(item) && typeof item === "object");
+  const questions = Array.isArray(record.questions)
+    ? record.questions.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const question = item as Record<string, unknown>;
+        if (typeof question.prompt !== "string" || question.prompt.trim() === "") return [];
+        const parsed: GenerateQuestion = { prompt: question.prompt.trim() };
+        if (typeof question.guess === "string" && question.guess.trim()) parsed.guess = question.guess.trim();
+        return [parsed];
+      })
+    : [];
+  return {
+    surfaces: record.surfaces.filter((item): item is ProposedSurface => Boolean(item) && typeof item === "object"),
+    questions,
+  };
+}
+
+async function askStuckQuestions(options: {
+  prompter: Prompter;
+  interactive: boolean;
+  yes: boolean;
+  nonInteractive: TyxtestConfig["nonInteractive"];
+  maxQuestions: number;
+  questions: GenerateQuestion[];
+}): Promise<string[]> {
+  if (options.questions.length === 0) return [];
+  const cap = options.maxQuestions;
+  const askable = options.questions.slice(0, cap);
+  const overflow = options.questions.slice(cap);
+  const flags = overflow.map((question) => guessFlag(question, "over maxQuestions"));
+  const ask = options.interactive && !options.yes && askable.length > 0;
+  if (ask) {
+    const body = askable
+      .map((question, index) => `${index + 1}. ${question.prompt}${question.guess ? ` [${question.guess}]` : ""}`)
+      .join("\n");
+    await options.prompter.ask(`Answer these in one reply, or press enter to keep the guesses:\n${body}\n`);
+    return flags;
+  }
+  if (!options.interactive && !options.yes && options.nonInteractive === "fail" && askable.length > 0) {
+    throw new Error("generate has questions and nonInteractive is fail. Re-run locally or set nonInteractive to search.");
+  }
+  return [...askable.map((question) => guessFlag(question, "guess")), ...flags];
+}
+
+function guessFlag(question: GenerateQuestion, label: string): string {
+  return `${label}: ${question.prompt}${question.guess ? ` → ${question.guess}` : ""}`;
 }
 
 function flatten(nodes: ProposedSurface[], parent = ""): FlatSurface[] {

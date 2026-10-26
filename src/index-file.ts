@@ -10,12 +10,25 @@ export interface IndexSymbolFile {
   symbols: string[];
 }
 
+export interface FlowStep {
+  id: string;
+  text: string;
+  entry: string;
+}
+
+export interface FlowRecord {
+  testId: string;
+  steps: FlowStep[];
+  closure: Array<{ hash: string; path: string }>;
+}
+
 export interface SurfaceIndex {
   closure: Array<{ hash: string; path: string }>;
   closureHash: string;
   entry: string[];
   files: IndexSymbolFile[];
   notes: string[];
+  flows?: FlowRecord[];
 }
 
 export function writeIndex(file: string, index: SurfaceIndex): void {
@@ -34,6 +47,8 @@ export function writeIndex(file: string, index: SurfaceIndex): void {
       .sort((left, right) => left.path.localeCompare(right.path)),
     notes: [...new Set(index.notes.map((note) => note.trim()).filter(Boolean))].sort(),
   };
+  const flows = normalizeFlows(index.flows);
+  if (flows.length > 0) normalized.flows = flows;
   writeText(file, prettyJson(normalized));
 }
 
@@ -57,7 +72,30 @@ export function readIndex(file: string): SurfaceIndex {
         }))
       : [],
     notes: Array.isArray(parsed.notes) ? parsed.notes.map((note) => String(note)) : [],
+    flows: normalizeFlows(parsed.flows),
   };
+}
+
+function normalizeFlows(flows: FlowRecord[] | undefined): FlowRecord[] {
+  if (!Array.isArray(flows)) return [];
+  return flows
+    .flatMap((flow) => {
+      if (!flow || typeof flow.testId !== "string" || !Array.isArray(flow.steps)) return [];
+      const steps = flow.steps.flatMap((step) => {
+        if (!step || typeof step.id !== "string" || typeof step.text !== "string" || typeof step.entry !== "string") {
+          return [];
+        }
+        return [{ id: step.id, text: step.text, entry: normalizeRel(step.entry) }];
+      });
+      if (steps.length === 0) return [];
+      const closure = Array.isArray(flow.closure)
+        ? flow.closure
+            .map((item) => ({ hash: String(item.hash), path: normalizeRel(String(item.path)) }))
+            .sort((left, right) => left.path.localeCompare(right.path))
+        : [];
+      return [{ testId: flow.testId, steps, closure }];
+    })
+    .sort((left, right) => left.testId.localeCompare(right.testId));
 }
 
 export function indexExists(file: string): boolean {

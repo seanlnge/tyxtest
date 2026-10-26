@@ -11,13 +11,13 @@ const HELP = `tyxtest — product-surface tests for TypeScript
 Usage:
   tyxtest setup
   tyxtest generate [--yes]
-  tyxtest index [--fix] [surface...]
-  tyxtest run [--non-interactive] [surface...]
+  tyxtest index [--pending] [surface...]
+  tyxtest run [--non-interactive] [--verbose] [surface...]
 
 setup     write tyxtest/tyxtest.config.json, ignore .env, mark .index.json merge=ours
 generate  propose the first surface tree when tyxtest/ has no surfaces
-index     map each surface onto its import closure and write .index.json
-run       judge each test. A decision model scores p(pass); an LLM runs only on escalation, or when runnerModel.kind is llm
+index     map each surface onto its import closure and write .index.json. --pending reindexes suggestions in tyxtest/.pending.json
+run       judge each test. A decision model scores p(pass); an LLM runs only on escalation, or when runnerModel.kind is llm. Runs do not write .index.json
 
 Config lives in tyxtest/tyxtest.config.json and names env vars. It must not contain API keys.
 `;
@@ -80,7 +80,7 @@ async function dispatch(
     return 0;
   }
   if (command === "index") {
-    await indexCommand({ cwd, prompter, env, interactive, surfaces: positionals });
+    await indexCommand({ cwd, prompter, env, interactive, surfaces: positionals, pending: flags.has("--pending") });
     return 0;
   }
   if (command === "run") {
@@ -91,6 +91,7 @@ async function dispatch(
       surfaces: positionals,
       stdout: deps.stdout,
       stderr: deps.stderr,
+      verbose: flags.has("--verbose"),
     });
     return outcome.exitCode;
   }

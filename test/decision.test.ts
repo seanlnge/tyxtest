@@ -84,7 +84,11 @@ test("decision thresholds pass and fail without an LLM call, and evidence lines 
   assert.equal(passed.results[0]?.verdict, "pass");
   assert.equal(passed.exitCode, 0);
   assert.equal(passRunner.completes, 0);
-  assert.deepEqual(passed.results[0]?.evidence, [{ file: "src/login.ts", line: submit.line }]);
+  const evidence = passed.results[0]?.evidence[0];
+  assert.equal(evidence?.file, "src/login.ts");
+  assert.equal(evidence?.line, submit.line);
+  assert.equal(evidence?.symbol, "SubmitButton");
+  assert.match(evidence?.id ?? "", /^login\.ts#SubmitButton@[a-f0-9]{8}$/);
   assert.equal(
     passRunner.decides.every((request) => !("line" in request) && request.options.join(",") !== ""),
     true,
@@ -195,7 +199,7 @@ test("ignoreUnchanged skips tests outside the diff", async () => {
   writeSurface("about", "about.ts", 'export function About() {\n  return "about";\n}\n');
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["add", "."], { cwd, stdio: "ignore" });
-  execFileSync("git", ["-c", "user.name=Tyxtest", "-c", "user.email=tyxtest@example.com", "commit", "-m", "base"], {
+  execFileSync("git", ["-c", "user.name=Tyxtest", "-c", "user.email=tyxtest@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "base"], {
     cwd,
     stdio: "ignore",
   });

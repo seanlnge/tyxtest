@@ -1,3 +1,4 @@
+import { withRateLimitBackoff } from "./backoff.js";
 import { resolveApiKey, resolveApiKeyName } from "./config.js";
 import type { DecisionAnswer, DecisionRequest, ModelClient, ModelConfig, ModelRequest } from "./types.js";
 
@@ -96,12 +97,20 @@ class OllamaClient implements ModelClient {
 }
 
 async function postJson(url: string, body: unknown, headers: Record<string, string>): Promise<unknown> {
+  return withRateLimitBackoff(() => postJsonOnce(url, body, headers));
+}
+
+async function postJsonOnce(url: string, body: unknown, headers: Record<string, string>): Promise<unknown> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
+  if (response.status === 429) {
+    const text = await response.text();
+    throw new Error(`Model request failed (429): rate limit ${text.slice(0, 200)}`);
+  }
   const text = await response.text();
   let payload: unknown = {};
   if (text) {

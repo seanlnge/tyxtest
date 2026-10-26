@@ -2,14 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { loadConfig, requireModels } from "./config.js";
-import { computeSurfaceClosure, exportedSymbols } from "./closure.js";
+import { computeSurfaceClosure, exportedSymbols, hashClosure } from "./closure.js";
 import { createModelClient } from "./providers.js";
 import { discoverSurfaces, filterSurfaces, type Surface } from "./discover.js";
 import { loadEnvFile } from "./env.js";
 import { readText } from "./fs-util.js";
-import { readIndex, writeIndex, type SurfaceIndex } from "./index-file.js";
+import { readIndex, writeIndex, type FlowRecord, type SurfaceIndex } from "./index-file.js";
 import { asRecord, asStringArray, parseModelJson } from "./model-json.js";
-import { takeProposedNotes } from "./notes.js";
+import { clearPendingSurface, readPending } from "./pending.js";
 import { normalizeRel } from "./paths.js";
 import type { Prompter } from "./prompter.js";
 import { listSourceFiles, readFileBundle } from "./repo-files.js";
@@ -21,6 +21,7 @@ export async function indexCommand(options: {
   prompter: Prompter;
   interactive: boolean;
   surfaces?: string[];
+  pending?: boolean;
   env?: NodeJS.ProcessEnv;
   config?: TyxtestConfig;
   model?: ModelSource;
@@ -31,6 +32,17 @@ export async function indexCommand(options: {
   const surfaces = discoverSurfaces(options.cwd);
   if (surfaces.length === 0) throw new Error("No tyxtest surfaces found.");
   const selected = new Set(filterSurfaces(surfaces, options.surfaces).map((surface) => surface.relativeDir));
+  if (options.pending) {
+    const pending = readPending(options.cwd);
+    if (pending.length === 0) {
+      options.prompter.log("No pending index suggestions.");
+      return;
+    }
+    const flagged = new Set(pending.map((item) => item.surface));
+    for (const dir of [...selected]) {
+      if (!flagged.has(dir)) selected.delete(dir);
+    }
+  }
   if (selected.size === 0) throw new Error("No matching surfaces.");
 
   const indexes = new Map<string, SurfaceIndex>();
@@ -51,6 +63,7 @@ export async function indexCommand(options: {
       parentClosure: parentClosure(surface, indexes),
     });
     indexes.set(surface.relativeDir, index);
+    clearPendingSurface(options.cwd, surface.relativeDir);
   }
 }
 
@@ -86,13 +99,18 @@ async function indexSurface(options: {
   const tests = readText(options.surface.markdownPath);
   const response = await options.model.complete({
     purpose: "index",
-    system:
-      "You map a product surface to source files. Reply with JSON only: {\"files\":[{\"path\":\"\",\"symbols\":[\"\"]}],\"notes\":[\"\"]}. Stay inside the provided files.",
+    system: [
+      "You map a product surface to source files.",
+      'Reply with JSON only: {"files":[{"path":"","symbols":[""]}],"notes":[""],"flows":[{"testId":"","steps":[{"id":"","text":"","entry":""}]}]}',
+      "Stay inside the provided files.",
+      "If a test is a multi-step path, store it as a flow of steps. Stop at external boundaries such as a redirect to Stripe. Do not describe what the external service renders. Record the steps and do not count them.",
+    ].join(" "),
     prompt: [
       `Surface: ${options.surface.name}`,
       options.surface.description ? `Description: ${options.surface.description}` : "",
       `Entry: ${entry}`,
       options.parentClosure ? "Only files inside the parent surface closure are in scope." : "",
+      pendingPrompt(options.cwd, options.surface.relativeDir),
       "surface.md:",
       tests,
       "Code:",
@@ -115,13 +133,15 @@ async function indexSurface(options: {
     hash: allowed.get(file.path) ?? "",
     symbols: file.symbols.length > 0 ? file.symbols : exportedSymbols(path.join(options.cwd, file.path)),
   }));
-  const notes = [...parsed.notes, ...takeProposedNotes(options.cwd, options.surface.relativeDir)];
+  const notes = parsed.notes;
+  const flows = buildFlows(options.cwd, options.config.closureDepth, options.parentClosure, parsed.flows);
   const index: SurfaceIndex = {
     closure: closure.files,
     closureHash: closure.closureHash,
     entry: [normalizeRel(entry)],
     files,
     notes,
+    flows,
   };
   writeIndex(path.join(options.surface.dir, ".index.json"), index);
   options.prompter.log(`indexed ${options.surface.relativeDir}`);
@@ -194,7 +214,46 @@ function parentClosure(surface: Surface, indexes: Map<string, SurfaceIndex>): Ar
   return parent.closure;
 }
 
-function parseIndexResponse(text: string): { files: Array<{ path: string; symbols: string[] }>; notes: string[] } {
+function pendingPrompt(cwd: string, surface: string): string {
+  const pending = readPending(cwd).filter((item) => item.surface === surface);
+  if (pending.length === 0) return "";
+  return `Pending suggestions:\n${pending.map((item) => `${item.testId}: ${item.detail || item.reason}`).join("\n")}`;
+}
+
+function buildFlows(
+  cwd: string,
+  depth: number | null,
+  parentClosure: Array<{ path: string }> | null,
+  flows: Array<{ testId: string; steps: Array<{ id: string; text: string; entry: string }> }>,
+): FlowRecord[] {
+  return flows.flatMap((flow) => {
+    const parts = [];
+    for (const step of flow.steps) {
+      if (!fs.existsSync(path.join(cwd, step.entry))) continue;
+      try {
+        parts.push(computeSurfaceClosure({ cwd, entry: step.entry, depth, parentClosure }));
+      } catch {
+        continue;
+      }
+    }
+    const byPath = new Map<string, { hash: string; path: string }>();
+    for (const part of parts) {
+      for (const file of part.files) byPath.set(file.path, file);
+    }
+    const closure = [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+    return [{ testId: flow.testId, steps: flow.steps, closure, closureHash: hashClosure(closure) }].map((item) => ({
+      testId: item.testId,
+      steps: item.steps,
+      closure: item.closure,
+    }));
+  });
+}
+
+function parseIndexResponse(text: string): {
+  files: Array<{ path: string; symbols: string[] }>;
+  notes: string[];
+  flows: Array<{ testId: string; steps: Array<{ id: string; text: string; entry: string }> }>;
+} {
   const record = asRecord(parseModelJson(text), "Index response");
   const files: Array<{ path: string; symbols: string[] }> = [];
   if (Array.isArray(record.files)) {
@@ -205,7 +264,25 @@ function parseIndexResponse(text: string): { files: Array<{ path: string; symbol
       files.push({ path: file.path, symbols: asStringArray(file.symbols) });
     }
   }
-  return { files, notes: asStringArray(record.notes) };
+  const flows: Array<{ testId: string; steps: Array<{ id: string; text: string; entry: string }> }> = [];
+  if (Array.isArray(record.flows)) {
+    for (const item of record.flows) {
+      if (!item || typeof item !== "object") continue;
+      const flow = item as Record<string, unknown>;
+      if (typeof flow.testId !== "string" || !Array.isArray(flow.steps)) continue;
+      const steps = flow.steps.flatMap((step) => {
+        if (!step || typeof step !== "object") return [];
+        const recordStep = step as Record<string, unknown>;
+        if (typeof recordStep.id !== "string" || typeof recordStep.text !== "string" || typeof recordStep.entry !== "string") {
+          return [];
+        }
+        return [{ id: recordStep.id, text: recordStep.text, entry: normalizeRel(recordStep.entry) }];
+      });
+      if (steps.length === 0) continue;
+      flows.push({ testId: flow.testId, steps });
+    }
+  }
+  return { files, notes: asStringArray(record.notes), flows };
 }
 
 function resolveModel(source: ModelSource | undefined, fallback: () => ModelClient): ModelClient {

@@ -1,6 +1,6 @@
 # tyxtest
 
-tyxtest checks product claims against a TypeScript codebase. A test says what the product does ("there is a submit button in the form"). By default a decision model scores that claim against chunks of the import closure. An LLM runs only when the probability is between the pass and fail thresholds, when a failing test's evidence chunks are gone (`relocateCheck`, on by default), or when `runnerModel.kind` is `llm`.
+tyxtest checks product claims against a TypeScript codebase. A test says what the product does ("there is a submit button in the form"). By default a decision model scores that claim against chunks of the import closure. An LLM runs only when the probability is between the pass and fail thresholds, when a failing test's evidence chunks are gone (`relocateCheck`, on by default), or when `runnerModel.kind` is `llm`. A run never writes `.index.json`. Suggestions go to gitignored `tyxtest/.pending.json` and are applied with `tyxtest index --pending`. In CI that suggestion is a warning only.
 
 Checks are static. tyxtest does not run the code, and it does not plug into Vitest or Jest.
 
@@ -15,7 +15,7 @@ npm run build
 node dist/cli.js --help
 ```
 
-`npm test` runs the mechanical harness: config guards, surface ID backfill, p(pass) thresholds, escalation, chunk evidence, cache keys (including option order), unchanged-test skips, stale indexes (import drift, entry rename, deleted entry, relocate check), import-closure hashing, and setup's git files.
+`npm test` runs the mechanical harness: config guards, surface ID backfill, p(pass) thresholds, escalation, chunk evidence and identity, cache keys (including option order), unchanged-test skips, stale indexes (import drift, entry rename, deleted entry, relocate check), pending suggestions, flow step counts, concurrency, rate-limit backoff, generate's question cap, import-closure hashing, and setup's git files.
 
 ## Use
 
@@ -28,7 +28,7 @@ node dist/cli.js index
 node dist/cli.js run
 ```
 
-`setup` writes `tyxtest/tyxtest.config.json`, adds `.env` and `.tyxtest/` to `.gitignore`, and sets `tyxtest/**/.index.json merge=ours` in `.gitattributes`. Inside a git checkout it also sets the local `merge.ours.driver` so those index files do not conflict.
+`setup` writes `tyxtest/tyxtest.config.json`, adds `.env`, `.tyxtest/`, and `tyxtest/.pending.json` to `.gitignore`, and sets `tyxtest/**/.index.json merge=ours` in `.gitattributes`. Inside a git checkout it also sets the local `merge.ours.driver` so those index files do not conflict.
 
 Put API keys in the environment (or in a gitignored `.env`). The config file stores the variable name in `apiKeyEnv`, never the key. Values that look like `sk-...` are rejected.
 

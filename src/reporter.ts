@@ -12,7 +12,7 @@ export interface ReportedTest {
   explanation: string;
 }
 
-export function formatReport(results: ReportedTest[], unsureBlocks: boolean): string {
+export function formatReport(results: ReportedTest[], unsureBlocks: boolean, verbose = false): string {
   const lines: string[] = [];
   const groups = new Map<string, ReportedTest[]>();
   for (const result of results) {
@@ -29,6 +29,7 @@ export function formatReport(results: ReportedTest[], unsureBlocks: boolean): st
       }
       const cached = test.cached ? " (cached)" : "";
       lines.push(`  ${test.verdict}  [${test.id}] ${test.text}${cached}`);
+      if (test.verdict === "pass" && !verbose) continue;
       for (const citation of test.evidence) {
         lines.push(`    ${citation.file}:${citation.line}`);
       }

@@ -3,6 +3,11 @@ export type Verdict = "pass" | "fail" | "unsure" | "skipped";
 export interface Citation {
   file: string;
   line: number;
+  /** Function, component, or class the chunker attributed. */
+  symbol?: string;
+  /** Short content hash of the chunk. Identity is `file#symbol@hash`, not the line. */
+  hash?: string;
+  id?: string;
 }
 
 export type ModelKind = "decision" | "llm";
@@ -44,6 +49,9 @@ export interface TyxtestConfig {
   triage: boolean;
   relocateCheck: boolean;
   closureDepth: number | null;
+  maxQuestions: number;
+  chunkMaxTokens: number;
+  concurrency: number;
   guards: Guards;
 }
 

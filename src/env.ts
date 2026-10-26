@@ -24,9 +24,13 @@ export function loadEnvFile(cwd: string, env: NodeJS.ProcessEnv): NodeJS.Process
   return merged;
 }
 
-export function isNonInteractive(env: NodeJS.ProcessEnv, stdinIsTTY: boolean): boolean {
+export function isCi(env: NodeJS.ProcessEnv): boolean {
   const ci = env.CI;
-  if (typeof ci === "string" && ci !== "0" && ci !== "false" && ci !== "") return true;
+  return typeof ci === "string" && ci !== "0" && ci !== "false" && ci !== "";
+}
+
+export function isNonInteractive(env: NodeJS.ProcessEnv, stdinIsTTY: boolean): boolean {
+  if (isCi(env)) return true;
   if (env.TYXTEST_NONINTERACTIVE === "1") return true;
   return !stdinIsTTY;
 }

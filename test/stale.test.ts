@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { computeSurfaceClosure } from "../src/closure.js";
 import { writeIndex } from "../src/index-file.js";
-import { readProposedNotes } from "../src/notes.js";
+import { readPending } from "../src/pending.js";
 import { parseConfig } from "../src/config.js";
 import { runCommand } from "../src/run.js";
 import type { DecisionRequest, ModelClient, ModelRequest, TyxtestConfig } from "../src/types.js";
@@ -104,7 +104,7 @@ test("entry rename from git diff -M updates entry and warns", async () => {
   writeSurface(cwd, "src/login.ts", 'export function Login() {\n  return "TOKEN_RENAMED";\n}\n', ["Login"]);
   execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
   execFileSync("git", ["add", "."], { cwd, stdio: "ignore" });
-  execFileSync("git", ["-c", "user.name=Tyxtest", "-c", "user.email=tyxtest@example.com", "commit", "-m", "base"], {
+  execFileSync("git", ["-c", "user.name=Tyxtest", "-c", "user.email=tyxtest@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "base"], {
     cwd,
     stdio: "ignore",
   });
@@ -194,7 +194,7 @@ test("relocate check proposes an index update when a failed test's evidence move
   assert.equal(runner.completes, 0);
   assert.equal(indexCalls.length, 1);
   assert.equal(indexCalls[0]?.purpose, "relocate");
-  assert.match(readProposedNotes(cwd).login?.join("\n") ?? "", /src\/billing\.ts/);
+  assert.match(readPending(cwd).map((item) => item.detail ?? "").join("\n"), /src\/billing\.ts/);
   assert.match(found.results[0]?.explanation ?? "", /Proposed index update/);
   assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
 
@@ -215,7 +215,7 @@ test("relocate check proposes an index update when a failed test's evidence move
   });
   assert.equal(missed.results[0]?.verdict, "fail");
   assert.equal(missed.exitCode, 1);
-  assert.equal(readProposedNotes(missing).login, undefined);
+  assert.equal(readPending(missing).length, 0);
 });
 
 test("relocateCheck false does not call the index model", async () => {

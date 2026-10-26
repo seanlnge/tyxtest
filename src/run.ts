@@ -1,18 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { withRateLimitBackoff } from "./backoff.js";
 import { cacheKey, loadCache, saveCache, type CacheHit } from "./cache.js";
 import { chunkClosure, evidenceForChunks, type CodeChunk } from "./chunk.js";
 import { loadConfig, requireModels } from "./config.js";
-import { collectClosure, computeSurfaceClosure, type ClosureFile } from "./closure.js";
+import { collectClosure, computeSurfaceClosure, hashClosure, type ClosureFile } from "./closure.js";
 import { discoverSurfaces, filterSurfaces, type Surface } from "./discover.js";
 import { affectsTest, changedFiles, diffPatch, renamedPaths } from "./diff.js";
 import { loadEnvFile } from "./env.js";
 import { applyEvidenceCheck } from "./evidence.js";
-import { readIndex, type SurfaceIndex } from "./index-file.js";
+import { readIndex, type FlowRecord, type SurfaceIndex } from "./index-file.js";
 import { hashLockfiles } from "./lockfile.js";
 import { asRecord, asStringArray, parseModelJson } from "./model-json.js";
-import { addProposedNotes } from "./notes.js";
+import { recordSuggestion } from "./pending.js";
+import { mapPool } from "./pool.js";
 import { normalizeRel } from "./paths.js";
 import { createModelClient } from "./providers.js";
 import { formatReport, writeReports, type ReportedTest } from "./reporter.js";
@@ -40,6 +42,7 @@ export async function runCommand(options: {
   escalateModel?: ModelSource;
   stdout?: (message: string) => void;
   stderr?: (message: string) => void;
+  verbose?: boolean;
 }): Promise<RunOutcome> {
   const config = options.config ?? loadConfig(options.cwd);
   const env = loadEnvFile(options.cwd, options.env ?? process.env);
@@ -61,7 +64,7 @@ export async function runCommand(options: {
   const cacheFile = path.join(options.cwd, ".tyxtest", "verdict-cache.json");
   const cache = loadCache(cacheFile);
   let cacheDirty = false;
-  const results: ReportedTest[] = [];
+  const jobs: Array<() => Promise<ReportedTest>> = [];
   let runner: ModelClient | null = null;
   let searcher: ModelClient | null = null;
   let escalator: ModelClient | null = null;
@@ -99,18 +102,21 @@ export async function runCommand(options: {
         const searched = await searchClosure(indexClient(), options.cwd, surface, markdown);
         for (const test of tests) {
           if (diff && !affectsTest({ changed: diff.files, lockfileChanged: diff.lockfileChanged, closurePaths: searched.files.map((file) => file.path), surfacePath })) {
-            results.push(skipped(surface, test));
+            jobs.push(async () => skipped(surface, test));
             continue;
           }
-          results.push(
-            await judgeTest({
+          jobs.push(() =>
+            judgeTest({
               cwd: options.cwd,
               config,
+              env,
+              stderr,
               surface,
               test,
               closure: searched,
               hashSource: searched.files,
               symbols: [],
+              flows: [],
               runner: runnerClient(),
               escalate: escalateClient(),
               indexModel: indexClient,
@@ -159,27 +165,40 @@ export async function runCommand(options: {
         )
       : "";
     for (const test of tests) {
+      const testClosure = closureForTest({
+        cwd: options.cwd,
+        surface,
+        test,
+        index,
+        live,
+        depth: config.closureDepth,
+        parentClosure: parentClosure(surface, indexes),
+        stderr,
+      });
       if (
         diff &&
         !affectsTest({
           changed: diff.files,
           lockfileChanged: diff.lockfileChanged,
-          closurePaths: live.files.map((file) => file.path),
+          closurePaths: testClosure.files.map((file) => file.path),
           surfacePath,
         })
       ) {
-        results.push(skipped(surface, test));
+        jobs.push(async () => skipped(surface, test));
         continue;
       }
-      results.push(
-        await judgeTest({
+      jobs.push(() =>
+        judgeTest({
           cwd: options.cwd,
           config,
+          env,
+          stderr,
           surface,
           test,
-          closure: live,
+          closure: testClosure,
           hashSource: index.closure,
           symbols: index.files.flatMap((file) => file.symbols),
+          flows: index.flows ?? [],
           runner: runnerClient(),
           escalate: escalateClient(),
           indexModel: indexClient,
@@ -195,8 +214,9 @@ export async function runCommand(options: {
     }
   }
 
+  const results = await mapPool(jobs, config.concurrency, (job) => job());
   if (cacheDirty) saveCache(cacheFile, cache);
-  const report = formatReport(results, config.unsureBlocks);
+  const report = formatReport(results, config.unsureBlocks, options.verbose === true);
   stdout(report);
   const written = writeReports(path.join(options.cwd, ".tyxtest"), results, config.unsureBlocks);
   stdout(`JSON: ${path.relative(options.cwd, written.json)}\nJUnit: ${path.relative(options.cwd, written.junit)}\n`);
@@ -208,9 +228,12 @@ async function judgeTest(options: {
   config: TyxtestConfig;
   surface: Surface;
   test: { id: string; text: string };
+  env: NodeJS.ProcessEnv;
+  stderr: (message: string) => void;
   closure: { files: ClosureFile[]; closureHash: string };
   hashSource: Array<{ path: string; hash: string }>;
   symbols: string[];
+  flows: FlowRecord[];
   runner: ModelClient;
   escalate: ModelClient;
   indexModel: () => ModelClient;
@@ -268,13 +291,27 @@ async function judgeTest(options: {
     }
   }
 
+  const flow = options.flows.find((item) => item.testId === options.test.id);
   const judged =
-    kind === "llm"
-      ? await judgeWithLlm(options, options.runner)
-      : await judgeWithDecision(options);
+    flow && flow.steps.length > 0 && kind === "decision"
+      ? await judgeFlow(options, flow)
+      : kind === "llm"
+        ? await judgeWithLlm(options, options.runner)
+        : await judgeWithDecision(options);
   let verdict = judged.verdict;
   let explanation = judged.explanation;
-  if (verdict === "fail" && options.config.relocateCheck && !options.forceUnsure) {
+  if (judged.indexStale) {
+    recordSuggestion({
+      cwd: options.cwd,
+      env: options.env,
+      stderr: options.stderr,
+      surface: options.surface.relativeDir,
+      testId: options.test.id,
+      reason: "index may be stale",
+      detail: explanation,
+    });
+  }
+  if (verdict === "fail" && options.config.relocateCheck && !options.forceUnsure && !flow) {
     const relocated = await relocateIfEvidenceGone(options, explanation);
     verdict = relocated.verdict;
     explanation = relocated.explanation;
@@ -289,12 +326,23 @@ async function judgeTest(options: {
     };
     options.onCacheWrite();
   }
-  return { ...judged, verdict, explanation };
+  return {
+    surface: judged.surface,
+    id: judged.id,
+    text: judged.text,
+    verdict,
+    cached: judged.cached,
+    runs: judged.runs,
+    evidence: judged.evidence,
+    explanation,
+  };
 }
 
 async function relocateIfEvidenceGone(
   options: {
     cwd: string;
+    env: NodeJS.ProcessEnv;
+    stderr: (message: string) => void;
     surface: Surface;
     test: { id: string; text: string };
     closure: { files: ClosureFile[]; closureHash: string };
@@ -305,7 +353,7 @@ async function relocateIfEvidenceGone(
 ): Promise<{ verdict: "fail" | "unsure"; explanation: string }> {
   const chunks = chunkClosure(options.cwd, options.closure.files);
   if (!evidenceChunksGone(options.symbols, chunks)) return { verdict: "fail", explanation };
-  const response = await options.indexModel().complete({
+  const response = await withRateLimitBackoff(() => options.indexModel().complete({
     purpose: "relocate",
     system:
       'Indexed evidence for this claim is gone. Reply with JSON only: {"found":true,"path":"relative/file.ts"} when the feature exists outside the indexed closure, or {"found":false}.',
@@ -316,19 +364,27 @@ async function relocateIfEvidenceGone(
       `Indexed closure:\n${options.closure.files.map((file) => file.path).join("\n") || "(none)"}`,
       `Repository files:\n${listSourceFiles(options.cwd).join("\n") || "(none)"}`,
     ].join("\n\n"),
-  });
+  }));
   const record = asRecord(parseModelJson(response), "Relocate response");
   if (record.found !== true) return { verdict: "fail", explanation };
   const where = typeof record.path === "string" && record.path.trim() ? normalizeRel(record.path) : "another file";
   const note = `Proposed index update: [${options.test.id}] ${options.test.text} now lives in ${where}.`;
-  addProposedNotes(options.cwd, options.surface.relativeDir, [note]);
+  recordSuggestion({
+    cwd: options.cwd,
+    env: options.env,
+    stderr: options.stderr,
+    surface: options.surface.relativeDir,
+    testId: options.test.id,
+    reason: "index may be stale",
+    detail: note,
+  });
   return { verdict: "unsure", explanation: note };
 }
 
-function evidenceChunksGone(symbols: string[], chunks: Array<{ name: string }>): boolean {
+function evidenceChunksGone(symbols: string[], chunks: Array<{ name: string; symbol?: string }>): boolean {
   if (symbols.length === 0) return false;
-  const names = new Set(chunks.map((chunk) => chunk.name));
-  return symbols.some((symbol) => !names.has(symbol));
+  const names = new Set(chunks.flatMap((chunk) => [chunk.name, chunk.symbol ?? ""]));
+  return symbols.some((symbol) => symbol.length > 0 && !names.has(symbol));
 }
 
 function closurePathsDiffer(indexed: Array<{ path: string }>, live: Array<{ path: string }>): boolean {
@@ -368,15 +424,17 @@ async function judgeWithDecision(options: {
   hashSource: Array<{ path: string; hash: string }>;
   runner: ModelClient;
   escalate: ModelClient;
-}): Promise<ReportedTest> {
+}): Promise<ReportedTest & { indexStale?: boolean }> {
   const decide = options.runner.decide?.bind(options.runner);
   if (!decide) throw new Error("The decision runner does not implement decide().");
-  const chunks = chunkClosure(options.cwd, options.closure.files);
-  const verdictAnswer = await decide({
-    purpose: "verdict",
-    state: renderClaim(options.surface, options.test, chunks),
-    options: [...VERDICT_OPTIONS],
-  });
+  const chunks = chunkClosure(options.cwd, options.closure.files, options.config.chunkMaxTokens);
+  const verdictAnswer = await withRateLimitBackoff(() =>
+    decide({
+      purpose: "verdict",
+      state: renderClaim(options.surface, options.test, chunks),
+      options: [...VERDICT_OPTIONS],
+    }),
+  );
   const pPass = probabilityOf(verdictAnswer.probabilities, VERDICT_OPTIONS, "pass");
   const band = thresholdVerdict(pPass, options.config.thresholds);
   if (band === "between") {
@@ -385,22 +443,17 @@ async function judgeWithDecision(options: {
     }
     return judgeWithLlm(options, options.escalate);
   }
-  const scores: number[] = [];
-  for (const chunk of chunks) {
-    const answer = await decide({
-      purpose: "evidence",
-      state: `Claim: ${options.test.text}\n\nChunk ${chunk.path}:${chunk.line} ${chunk.name}\n${chunk.text}`,
-      options: [...EVIDENCE_OPTIONS],
-    });
-    scores.push(probabilityOf(answer.probabilities, EVIDENCE_OPTIONS, "yes"));
-  }
-  return resultOf(
-    options,
-    band,
-    evidenceForChunks(chunks, scores),
-    [band],
-    `p(pass)=${pPass}`,
-  );
+  const scores = await mapPool(chunks, options.config.concurrency, async (chunk) => {
+    const answer = await withRateLimitBackoff(() =>
+      decide({
+        purpose: "evidence",
+        state: `Claim: ${options.test.text}\n\nChunk ${chunk.path}:${chunk.line} ${chunk.name}\n${chunk.text}`,
+        options: [...EVIDENCE_OPTIONS],
+      }),
+    );
+    return probabilityOf(answer.probabilities, EVIDENCE_OPTIONS, "yes");
+  });
+  return resultOf(options, band, evidenceForChunks(chunks, scores), [band], `p(pass)=${pPass}`);
 }
 
 async function judgeWithLlm(
@@ -413,7 +466,7 @@ async function judgeWithLlm(
     hashSource: Array<{ path: string; hash: string }>;
   },
   model: ModelClient,
-): Promise<ReportedTest> {
+): Promise<ReportedTest & { indexStale?: boolean }> {
   const contents = readClosureContents(options.cwd, options.closure.files);
   const bundle = options.closure.files
     .map((file) => `===== ${file.path} =====\n${contents[file.path] ?? ""}`)
@@ -422,30 +475,33 @@ async function judgeWithLlm(
   let evidence: Citation[] = [];
   let explanation = "";
   let worst: "pass" | "fail" | "unsure" = "pass";
-  const notes: string[] = [];
+  let indexStale = false;
   const total = 1 + options.config.reruns;
   for (let attempt = 0; attempt < total; attempt += 1) {
-    const response = await model.complete({
-      purpose: "run",
-      system: [
-        "You check one product claim against the source that was provided.",
-        'Reply with JSON only: {"verdict":"pass|fail|unsure","evidence":[{"file":"relative/path.tsx","line":1}],"explanation":"...","notes":[]}.',
-        "A pass must cite at least one file:line that exists in the provided source.",
-      ].join(" "),
-      prompt: [
-        `Surface: ${options.surface.name}`,
-        options.surface.description ? `Description: ${options.surface.description}` : "",
-        `Test [${options.test.id}] ${options.test.text}`,
-        "Code:",
-        bundle || "(no code)",
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-    });
+    const response = await withRateLimitBackoff(() =>
+      model.complete({
+        purpose: "run",
+        system: [
+          "You check one product claim against the source that was provided.",
+          'Reply with JSON only: {"verdict":"pass|fail|unsure","evidence":[{"file":"relative/path.tsx","line":1}],"explanation":"...","notes":[],"indexStale":false}.',
+          "Set indexStale to true only when the index looks wrong or incomplete for this test. Do not rewrite the index.",
+          "A pass must cite at least one file:line that exists in the provided source.",
+        ].join(" "),
+        prompt: [
+          `Surface: ${options.surface.name}`,
+          options.surface.description ? `Description: ${options.surface.description}` : "",
+          `Test [${options.test.id}] ${options.test.text}`,
+          "Code:",
+          bundle || "(no code)",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      }),
+    );
     const judged = parseJudge(response);
     const adjusted = applyEvidenceCheck(judged.verdict, judged.evidence, options.hashSource, contents);
     attempts.push(adjusted);
-    notes.push(...judged.notes);
+    if (judged.indexStale) indexStale = true;
     if (VERDICT_RANK[adjusted] >= VERDICT_RANK[worst] || attempt === 0) {
       worst = adjusted;
       evidence = judged.evidence;
@@ -453,8 +509,10 @@ async function judgeWithLlm(
     }
     if (attempt === 0 && adjusted === "pass") break;
   }
-  if (notes.length > 0) addProposedNotes(options.cwd, options.surface.relativeDir, notes);
-  return resultOf(options, aggregateVerdicts(attempts, options.config.verdictRule), evidence, attempts, explanation);
+  return {
+    ...resultOf(options, aggregateVerdicts(attempts, options.config.verdictRule), evidence, attempts, explanation),
+    indexStale,
+  };
 }
 
 function resultOf(
@@ -545,7 +603,13 @@ function readClosureContents(cwd: string, files: ClosureFile[]): Record<string, 
   return contents;
 }
 
-function parseJudge(text: string): { verdict: "pass" | "fail" | "unsure"; evidence: Citation[]; explanation: string; notes: string[] } {
+function parseJudge(text: string): {
+  verdict: "pass" | "fail" | "unsure";
+  evidence: Citation[];
+  explanation: string;
+  notes: string[];
+  indexStale: boolean;
+} {
   const record = asRecord(parseModelJson(text), "Verdict");
   const verdict = record.verdict === "pass" || record.verdict === "fail" || record.verdict === "unsure" ? record.verdict : "unsure";
   const evidence: Citation[] = [];
@@ -562,7 +626,174 @@ function parseJudge(text: string): { verdict: "pass" | "fail" | "unsure"; eviden
     evidence,
     explanation: typeof record.explanation === "string" ? record.explanation : "",
     notes: asStringArray(record.notes),
+    indexStale: record.indexStale === true,
   };
+}
+
+export function atMostBound(text: string): number | null {
+  const match = /\bat most\s+(\d+)\b/i.exec(text);
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+function closureForTest(options: {
+  cwd: string;
+  surface: Surface;
+  test: { id: string };
+  index: SurfaceIndex;
+  live: { files: ClosureFile[]; closureHash: string };
+  depth: number | null;
+  parentClosure: Array<{ path: string }> | null;
+  stderr: (message: string) => void;
+}): { files: ClosureFile[]; closureHash: string } {
+  const flow = (options.index.flows ?? []).find((item) => item.testId === options.test.id);
+  if (!flow || flow.steps.length === 0) return options.live;
+  const parts = [];
+  for (const step of flow.steps) {
+    if (!fs.existsSync(path.join(options.cwd, step.entry))) continue;
+    try {
+      parts.push(
+        computeSurfaceClosure({
+          cwd: options.cwd,
+          entry: step.entry,
+          depth: options.depth,
+          parentClosure: options.parentClosure,
+        }),
+      );
+    } catch {
+      continue;
+    }
+  }
+  if (parts.length === 0) return options.live;
+  const union = unionClosures(parts);
+  const baseline = flow.closure.length > 0 ? flow.closure : options.index.closure;
+  if (closurePathsDiffer(baseline, union.files)) {
+    options.stderr(
+      `index stale: "${options.surface.relativeDir}" import closure changed. Run \`tyxtest index\` to refresh it.`,
+    );
+  }
+  return union;
+}
+
+function unionClosures(parts: Array<{ files: ClosureFile[] }>): { files: ClosureFile[]; closureHash: string } {
+  const byPath = new Map<string, ClosureFile>();
+  for (const part of parts) {
+    for (const file of part.files) byPath.set(file.path, file);
+  }
+  const files = [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+  return { files, closureHash: hashClosure(files) };
+}
+
+async function judgeFlow(
+  options: {
+    cwd: string;
+    config: TyxtestConfig;
+    env: NodeJS.ProcessEnv;
+    stderr: (message: string) => void;
+    surface: Surface;
+    test: { id: string; text: string };
+    closure: { files: ClosureFile[]; closureHash: string };
+    hashSource: Array<{ path: string; hash: string }>;
+    runner: ModelClient;
+    escalate: ModelClient;
+    indexModel: () => ModelClient;
+  },
+  flow: FlowRecord,
+): Promise<ReportedTest & { indexStale?: boolean }> {
+  const bound = atMostBound(options.test.text);
+  if (bound !== null && flow.steps.length > bound) {
+    return resultOf(
+      options,
+      "fail",
+      [],
+      ["fail"],
+      `path has ${flow.steps.length} steps; at most ${bound} is checked as path length.`,
+    );
+  }
+  const decide = options.runner.decide?.bind(options.runner);
+  if (!decide) throw new Error("The decision runner does not implement decide().");
+  const stepVerdicts: Array<"pass" | "fail" | "unsure"> = [];
+  const evidence: Citation[] = [];
+  let indexStale = false;
+  for (const step of flow.steps) {
+    const stepClosure = fs.existsSync(path.join(options.cwd, step.entry))
+      ? computeSurfaceClosure({
+          cwd: options.cwd,
+          entry: step.entry,
+          depth: options.config.closureDepth,
+          parentClosure: null,
+        })
+      : { files: [], closureHash: "" };
+    const chunks = chunkClosure(options.cwd, stepClosure.files, options.config.chunkMaxTokens);
+    const answer = await withRateLimitBackoff(() =>
+      decide({
+        purpose: "verdict",
+        state: [`Step [${step.id}] ${step.text}`, renderClaim(options.surface, { id: step.id, text: step.text }, chunks)]
+          .join("\n\n"),
+        options: [...VERDICT_OPTIONS],
+      }),
+    );
+    const band = thresholdVerdict(probabilityOf(answer.probabilities, VERDICT_OPTIONS, "pass"), options.config.thresholds);
+    if (band === "between") {
+      if (!options.config.escalate) {
+        stepVerdicts.push("unsure");
+        continue;
+      }
+      const escalated = await judgeWithLlm(
+        { ...options, test: { id: step.id, text: step.text }, closure: stepClosure },
+        options.escalate,
+      );
+      stepVerdicts.push(escalated.verdict === "skipped" ? "unsure" : escalated.verdict);
+      evidence.push(...escalated.evidence);
+      if (escalated.indexStale) indexStale = true;
+      continue;
+    }
+    stepVerdicts.push(band);
+    const scores = await mapPool(chunks, options.config.concurrency, async (chunk) => {
+      const scored = await withRateLimitBackoff(() =>
+        decide({
+          purpose: "evidence",
+          state: `Claim: ${step.text}\n\nChunk ${chunk.path}:${chunk.line} ${chunk.name}\n${chunk.text}`,
+          options: [...EVIDENCE_OPTIONS],
+        }),
+      );
+      return probabilityOf(scored.probabilities, EVIDENCE_OPTIONS, "yes");
+    });
+    evidence.push(...evidenceForChunks(chunks, scores));
+  }
+  if (stepVerdicts.some((verdict) => verdict === "fail") && options.config.relocateCheck) {
+    const response = await withRateLimitBackoff(() =>
+      options.indexModel().complete({
+        purpose: "relocate",
+        system:
+          'A flow step failed. Reply with JSON only: {"found":true,"path":"relative/file.ts"} if the path moved, or {"found":false}.',
+        prompt: `Test [${options.test.id}] ${options.test.text}\nSteps:\n${flow.steps
+          .map((step) => `${step.id}: ${step.text} (${step.entry})`)
+          .join("\n")}`,
+      }),
+    );
+    const record = asRecord(parseModelJson(response), "Relocate response");
+    if (record.found === true) {
+      const where = typeof record.path === "string" && record.path.trim() ? normalizeRel(record.path) : "another file";
+      return {
+        ...resultOf(
+          options,
+          "unsure",
+          evidence,
+          stepVerdicts,
+          `Proposed index update: [${options.test.id}] ${options.test.text} now lives in ${where}.`,
+        ),
+        indexStale: true,
+      };
+    }
+  }
+  if (stepVerdicts.some((verdict) => verdict === "fail")) {
+    return resultOf(options, "fail", evidence, stepVerdicts, "a flow step failed");
+  }
+  if (stepVerdicts.some((verdict) => verdict === "unsure") || indexStale) {
+    return { ...resultOf(options, "unsure", evidence, stepVerdicts, "a flow step is unsure"), indexStale };
+  }
+  return { ...resultOf(options, "pass", evidence, stepVerdicts, ""), indexStale };
 }
 
 function isJudged(value: unknown): value is "pass" | "fail" | "unsure" {

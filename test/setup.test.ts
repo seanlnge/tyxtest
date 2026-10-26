@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { INDEX_MERGE_RULE } from "../src/git-files.js";
+import { INDEX_MERGE_RULE, PENDING_GITIGNORE } from "../src/git-files.js";
 import { setupCommand } from "../src/setup.js";
 import { scriptedPrompter, tempDir } from "./helpers.js";
 
@@ -35,6 +35,7 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   const gitignore = fs.readFileSync(path.join(cwd, ".gitignore"), "utf8");
   assert.ok(gitignore.split(/\r?\n/).includes("node_modules/"));
   assert.ok(gitignore.split(/\r?\n/).includes(".env"));
+  assert.ok(gitignore.split(/\r?\n/).includes(PENDING_GITIGNORE));
   const attributes = fs.readFileSync(path.join(cwd, ".gitattributes"), "utf8");
   assert.match(attributes, /\.index\.json/);
   assert.match(attributes, /merge=ours/);
@@ -54,6 +55,9 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
     escalateModel: unknown;
     ignoreUnchanged: boolean;
     relocateCheck: boolean;
+    maxQuestions: number;
+    chunkMaxTokens: number;
+    concurrency: number;
     guards: { gitignoreEnv: boolean };
   };
   assert.equal(config.entryMode, "ask-entry");
@@ -67,6 +71,9 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   assert.equal(config.escalateModel, null);
   assert.equal(config.ignoreUnchanged, true);
   assert.equal(config.relocateCheck, true);
+  assert.equal(config.maxQuestions, 5);
+  assert.equal(config.chunkMaxTokens, 4000);
+  assert.equal(config.concurrency, 8);
   assert.equal(config.guards.gitignoreEnv, true);
   assert.ok(prompter.warnings.some((warning) => warning.includes("TYXTEST_RUN_KEY")));
   assert.equal(

@@ -21,6 +21,9 @@ test("config defaults", () => {
   assert.equal(config.baseRef, "origin/main");
   assert.equal(config.triage, false);
   assert.equal(config.relocateCheck, true);
+  assert.equal(config.maxQuestions, 5);
+  assert.equal(config.chunkMaxTokens, 4000);
+  assert.equal(config.concurrency, 8);
   assert.deepEqual(config.guards, { literalKeyCheck: true, gitignoreEnv: true });
   assert.equal(config.indexModel, undefined);
   assert.equal(config.runnerModel, undefined);

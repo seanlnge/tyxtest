@@ -112,6 +112,9 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     triage: pickBoolean(raw.triage, false, "triage"),
     relocateCheck: pickBoolean(raw.relocateCheck, true, "relocateCheck"),
     closureDepth: pickDepth(raw.closureDepth),
+    maxQuestions: pickInteger(raw.maxQuestions, 5, "maxQuestions", 0),
+    chunkMaxTokens: pickInteger(raw.chunkMaxTokens, 4000, "chunkMaxTokens", 1),
+    concurrency: pickInteger(raw.concurrency, 8, "concurrency", 1),
     guards: {
       literalKeyCheck: pickBoolean(guards.literalKeyCheck, true, "guards.literalKeyCheck"),
       gitignoreEnv: pickBoolean(guards.gitignoreEnv, true, "guards.gitignoreEnv"),
@@ -185,9 +188,13 @@ function pickEnum<T extends string>(value: unknown, allowed: readonly T[], fallb
 }
 
 function pickReruns(value: unknown): number {
-  const picked = value === undefined ? 2 : value;
-  if (typeof picked !== "number" || !Number.isInteger(picked) || picked < 0) {
-    throw new Error("reruns must be a non-negative integer.");
+  return pickInteger(value, 2, "reruns", 0);
+}
+
+function pickInteger(value: unknown, fallback: number, label: string, minimum: number): number {
+  const picked = value === undefined ? fallback : value;
+  if (typeof picked !== "number" || !Number.isInteger(picked) || picked < minimum) {
+    throw new Error(`${label} must be an integer >= ${minimum}.`);
   }
   return picked;
 }
