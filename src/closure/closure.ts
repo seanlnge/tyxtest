@@ -2,8 +2,8 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 
-import { hashContent } from "./hash.js";
-import { isInsideNodeModules, normalizeRel, relativePosix } from "./paths.js";
+import { hashContent } from "../util/hash.js";
+import { isInsideNodeModules, normalizeRel, relativePosix } from "../util/paths.js";
 
 const require = createRequire(import.meta.url);
 const ts = require("typescript") as typeof import("typescript");

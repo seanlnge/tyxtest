@@ -1,6 +1,6 @@
-import { hashContent } from "./hash.js";
-import { normalizeRel } from "./paths.js";
-import type { Citation, Verdict } from "./types.js";
+import { hashContent } from "../util/hash.js";
+import { normalizeRel } from "../util/paths.js";
+import type { Citation, Verdict } from "../config/types.js";
 
 type JudgedVerdict = Exclude<Verdict, "skipped">;
 

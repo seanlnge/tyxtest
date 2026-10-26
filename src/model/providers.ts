@@ -1,6 +1,6 @@
 import { withRateLimitBackoff } from "./backoff.js";
-import { resolveApiKey, resolveApiKeyName } from "./config.js";
-import type { DecisionAnswer, DecisionRequest, ModelClient, ModelConfig, ModelRequest } from "./types.js";
+import { resolveApiKey, resolveApiKeyName } from "../config/config.js";
+import type { DecisionAnswer, DecisionRequest, ModelClient, ModelConfig, ModelRequest } from "../config/types.js";
 
 const REQUEST_TIMEOUT_MS = 120_000;
 

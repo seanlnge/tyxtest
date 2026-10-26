@@ -3,10 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { computeSurfaceClosure } from "../src/closure.js";
-import { writeIndex } from "../src/index-file.js";
-import { runCommand } from "../src/run.js";
-import type { ModelClient, ModelRequest } from "../src/types.js";
+import { computeSurfaceClosure } from "../src/closure/closure.js";
+import { writeIndex } from "../src/surface/index-file.js";
+import { runCommand } from "../src/commands/run.js";
+import type { ModelClient, ModelRequest } from "../src/config/types.js";
 import { tempDir } from "./helpers.js";
 
 function project(extraConfig: Record<string, unknown> = {}): string {

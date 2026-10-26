@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { INDEX_MERGE_RULE, PENDING_GITIGNORE } from "../src/git-files.js";
-import { setupCommand } from "../src/setup.js";
+import { INDEX_MERGE_RULE, PENDING_GITIGNORE } from "../src/git/git-files.js";
+import { setupCommand } from "../src/commands/setup.js";
 import { scriptedPrompter, tempDir } from "./helpers.js";
 
 const ANSWERS = [

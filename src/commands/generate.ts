@@ -1,17 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { loadConfig, requireModels } from "./config.js";
-import { discoverSurfaces } from "./discover.js";
-import { loadEnvFile } from "./env.js";
+import { loadConfig, requireModels } from "../config/config.js";
+import { discoverSurfaces } from "../surface/discover.js";
+import { loadEnvFile } from "../config/env.js";
 import { indexCommand } from "./index-command.js";
-import { asRecord, parseModelJson } from "./model-json.js";
-import { normalizeRel } from "./paths.js";
+import { asRecord, parseModelJson } from "../model/model-json.js";
+import { normalizeRel } from "../util/paths.js";
 import type { Prompter } from "./prompter.js";
-import { createModelClient } from "./providers.js";
-import { listSourceFiles, readFileBundle, routerFiles } from "./repo-files.js";
-import { backfillTestIds, writeSurface } from "./surface.js";
-import type { ModelClient, ModelSource, TyxtestConfig } from "./types.js";
+import { createModelClient } from "../model/providers.js";
+import { listSourceFiles, readFileBundle, routerFiles } from "../closure/repo-files.js";
+import { backfillTestIds, writeSurface } from "../surface/surface.js";
+import type { ModelClient, ModelSource, TyxtestConfig } from "../config/types.js";
 
 interface GenerateQuestion {
   prompt: string;

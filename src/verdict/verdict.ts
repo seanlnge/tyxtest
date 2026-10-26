@@ -1,4 +1,4 @@
-import type { Thresholds, Verdict } from "./types.js";
+import type { Thresholds, Verdict } from "../config/types.js";
 
 type JudgedVerdict = Exclude<Verdict, "skipped">;
 

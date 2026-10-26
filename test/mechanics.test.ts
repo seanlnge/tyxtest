@@ -3,19 +3,19 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { withRateLimitBackoff } from "../src/backoff.js";
-import { chunkSource, evidenceForChunks, evidenceIdentity } from "../src/chunk.js";
-import { computeSurfaceClosure, hashClosure } from "../src/closure.js";
-import { parseConfig } from "../src/config.js";
-import { generateCommand } from "../src/generate.js";
-import { hashContent } from "../src/hash.js";
-import { indexCommand } from "../src/index-command.js";
-import { readIndex, writeIndex, type FlowRecord } from "../src/index-file.js";
-import { mapPool } from "../src/pool.js";
-import { readPending } from "../src/pending.js";
-import { formatReport, type ReportedTest } from "../src/reporter.js";
-import { runCommand } from "../src/run.js";
-import type { DecisionRequest, ModelClient, ModelRequest, TyxtestConfig } from "../src/types.js";
+import { withRateLimitBackoff } from "../src/model/backoff.js";
+import { chunkSource, evidenceForChunks, evidenceIdentity } from "../src/closure/chunk.js";
+import { computeSurfaceClosure, hashClosure } from "../src/closure/closure.js";
+import { parseConfig } from "../src/config/config.js";
+import { generateCommand } from "../src/commands/generate.js";
+import { hashContent } from "../src/util/hash.js";
+import { indexCommand } from "../src/commands/index-command.js";
+import { readIndex, writeIndex, type FlowRecord } from "../src/surface/index-file.js";
+import { mapPool } from "../src/util/pool.js";
+import { readPending } from "../src/surface/pending.js";
+import { formatReport, type ReportedTest } from "../src/verdict/reporter.js";
+import { runCommand } from "../src/commands/run.js";
+import type { DecisionRequest, ModelClient, ModelRequest, TyxtestConfig } from "../src/config/types.js";
 import { scriptedPrompter, tempDir } from "./helpers.js";
 
 function config(overrides: Record<string, unknown> = {}): TyxtestConfig {

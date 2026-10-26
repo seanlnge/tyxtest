@@ -1,4 +1,4 @@
-import { loadEnvFile, isNonInteractive } from "./env.js";
+import { loadEnvFile, isNonInteractive } from "../config/env.js";
 import { generateCommand } from "./generate.js";
 import { indexCommand } from "./index-command.js";
 import type { Prompter } from "./prompter.js";

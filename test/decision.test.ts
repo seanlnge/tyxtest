@@ -4,13 +4,13 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { chunkClosure } from "../src/chunk.js";
-import { computeSurfaceClosure } from "../src/closure.js";
-import { parseConfig } from "../src/config.js";
-import { writeIndex } from "../src/index-file.js";
-import { formatReport } from "../src/reporter.js";
-import { runCommand } from "../src/run.js";
-import type { DecisionRequest, ModelClient, TyxtestConfig } from "../src/types.js";
+import { chunkClosure } from "../src/closure/chunk.js";
+import { computeSurfaceClosure } from "../src/closure/closure.js";
+import { parseConfig } from "../src/config/config.js";
+import { writeIndex } from "../src/surface/index-file.js";
+import { formatReport } from "../src/verdict/reporter.js";
+import { runCommand } from "../src/commands/run.js";
+import type { DecisionRequest, ModelClient, TyxtestConfig } from "../src/config/types.js";
 import { tempDir } from "./helpers.js";
 
 const SOURCE = `export function header() {

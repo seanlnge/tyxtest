@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { relativePosix } from "./paths.js";
+import { relativePosix } from "../util/paths.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "coverage", ".tyxtest", "tyxtest"]);

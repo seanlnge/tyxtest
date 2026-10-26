@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 
-import { normalizeRel } from "./paths.js";
+import { normalizeRel } from "../util/paths.js";
 
 const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
 

@@ -1,11 +1,11 @@
 import path from "node:path";
 
-import { defaultApiKeyEnv, parseConfig } from "./config.js";
-import { writeText } from "./fs-util.js";
+import { defaultApiKeyEnv, parseConfig } from "../config/config.js";
+import { writeText } from "../util/fs-util.js";
 import { generateCommand } from "./generate.js";
-import { ensureEnvGitignore, ensureIndexMergeAttributes, ensureOursMergeDriver } from "./git-files.js";
+import { ensureEnvGitignore, ensureIndexMergeAttributes, ensureOursMergeDriver } from "../git/git-files.js";
 import type { Prompter } from "./prompter.js";
-import type { ModelConfig, ModelKind } from "./types.js";
+import type { ModelConfig, ModelKind } from "../config/types.js";
 
 const PROVIDERS = new Set(["anthropic", "openai", "ollama", "typesafe", "laya"]);
 

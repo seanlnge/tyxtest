@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { defaultApiKeyEnv, loadConfig, parseConfig } from "../src/config.js";
+import { defaultApiKeyEnv, loadConfig, parseConfig } from "../src/config/config.js";
 import { tempDir } from "./helpers.js";
 
 test("config defaults", () => {

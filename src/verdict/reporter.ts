@@ -1,5 +1,5 @@
-import { writeText } from "./fs-util.js";
-import type { Citation, Verdict } from "./types.js";
+import { writeText } from "../util/fs-util.js";
+import type { Citation, Verdict } from "../config/types.js";
 
 export interface ReportedTest {
   surface: string;

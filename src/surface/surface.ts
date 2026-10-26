@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-import { readText, writeText } from "./fs-util.js";
+import { readText, writeText } from "../util/fs-util.js";
 
 export interface TestCase {
   id: string;

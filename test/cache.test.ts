@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { cacheKey } from "../src/cache.js";
-import { hashLockfiles } from "../src/lockfile.js";
+import { cacheKey } from "../src/verdict/cache.js";
+import { hashLockfiles } from "../src/verdict/lockfile.js";
 import { tempDir } from "./helpers.js";
 
 const base = {

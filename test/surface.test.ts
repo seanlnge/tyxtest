@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { backfillSurfaceFile, backfillTestIds } from "../src/surface.js";
+import { backfillSurfaceFile, backfillTestIds } from "../src/surface/surface.js";
 import { tempDir } from "./helpers.js";
 
 test("surface.md ID backfill writes a slug and keeps existing ids", () => {

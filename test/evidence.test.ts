@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyEvidenceCheck } from "../src/evidence.js";
-import { hashContent } from "../src/hash.js";
+import { applyEvidenceCheck } from "../src/verdict/evidence.js";
+import { hashContent } from "../src/util/hash.js";
 
 const source = "export const submit = true;\n";
 const closure = [{ path: "src/login.ts", hash: hashContent(source) }];

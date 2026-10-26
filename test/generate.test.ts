@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { generateCommand } from "../src/generate.js";
-import type { ModelClient, ModelRequest } from "../src/types.js";
+import { generateCommand } from "../src/commands/generate.js";
+import type { ModelClient, ModelRequest } from "../src/config/types.js";
 import { tempDir } from "./helpers.js";
 
 function silentPrompter() {

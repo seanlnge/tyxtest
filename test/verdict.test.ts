@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { aggregateVerdicts, exitCodeFor, thresholdVerdict } from "../src/verdict.js";
+import { aggregateVerdicts, exitCodeFor, thresholdVerdict } from "../src/verdict/verdict.js";
 
 test("p(pass) thresholds: pass, fail, and between", () => {
   const thresholds = { pass: 0.9, fail: 0.1 };

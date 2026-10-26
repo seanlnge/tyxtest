@@ -1,9 +1,9 @@
 import fs from "node:fs";
 
-import { readText, writeText } from "./fs-util.js";
-import { hashContent } from "./hash.js";
-import { prettyJson } from "./json.js";
-import type { Citation, Verdict } from "./types.js";
+import { readText, writeText } from "../util/fs-util.js";
+import { hashContent } from "../util/hash.js";
+import { prettyJson } from "../util/json.js";
+import type { Citation, Verdict } from "../config/types.js";
 
 export interface CacheKeyInput {
   testId: string;

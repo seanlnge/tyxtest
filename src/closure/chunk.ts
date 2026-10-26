@@ -2,8 +2,8 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 
-import { hashContent } from "./hash.js";
-import type { Citation } from "./types.js";
+import { hashContent } from "../util/hash.js";
+import type { Citation } from "../config/types.js";
 
 const require = createRequire(import.meta.url);
 const ts = require("typescript") as typeof import("typescript");

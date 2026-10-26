@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { normalizeRel, relativePosix } from "./paths.js";
+import { normalizeRel, relativePosix } from "../util/paths.js";
 import { readFrontmatter } from "./surface.js";
 
 export interface Surface {

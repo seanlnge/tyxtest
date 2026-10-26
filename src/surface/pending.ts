@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { isCi } from "./env.js";
-import { readText, writeText } from "./fs-util.js";
-import { prettyJson } from "./json.js";
+import { isCi } from "../config/env.js";
+import { readText, writeText } from "../util/fs-util.js";
+import { prettyJson } from "../util/json.js";
 
 export interface PendingSuggestion {
   surface: string;

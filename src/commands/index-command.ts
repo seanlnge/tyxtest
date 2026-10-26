@@ -1,20 +1,20 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { loadConfig, requireModels } from "./config.js";
-import { computeSurfaceClosure, exportedSymbols, hashClosure } from "./closure.js";
-import { createModelClient } from "./providers.js";
-import { discoverSurfaces, filterSurfaces, type Surface } from "./discover.js";
-import { loadEnvFile } from "./env.js";
-import { readText } from "./fs-util.js";
-import { readIndex, writeIndex, type FlowRecord, type SurfaceIndex } from "./index-file.js";
-import { asRecord, asStringArray, parseModelJson } from "./model-json.js";
-import { clearPendingSurface, readPending } from "./pending.js";
-import { normalizeRel } from "./paths.js";
+import { loadConfig, requireModels } from "../config/config.js";
+import { computeSurfaceClosure, exportedSymbols, hashClosure } from "../closure/closure.js";
+import { createModelClient } from "../model/providers.js";
+import { discoverSurfaces, filterSurfaces, type Surface } from "../surface/discover.js";
+import { loadEnvFile } from "../config/env.js";
+import { readText } from "../util/fs-util.js";
+import { readIndex, writeIndex, type FlowRecord, type SurfaceIndex } from "../surface/index-file.js";
+import { asRecord, asStringArray, parseModelJson } from "../model/model-json.js";
+import { clearPendingSurface, readPending } from "../surface/pending.js";
+import { normalizeRel } from "../util/paths.js";
 import type { Prompter } from "./prompter.js";
-import { listSourceFiles, readFileBundle } from "./repo-files.js";
-import { backfillSurfaceFile, readFrontmatter, setFrontmatterField } from "./surface.js";
-import type { ModelClient, ModelSource, TyxtestConfig } from "./types.js";
+import { listSourceFiles, readFileBundle } from "../closure/repo-files.js";
+import { backfillSurfaceFile, readFrontmatter, setFrontmatterField } from "../surface/surface.js";
+import type { ModelClient, ModelSource, TyxtestConfig } from "../config/types.js";
 
 export async function indexCommand(options: {
   cwd: string;

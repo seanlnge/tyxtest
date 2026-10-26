@@ -4,12 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { computeSurfaceClosure } from "../src/closure.js";
-import { writeIndex } from "../src/index-file.js";
-import { readPending } from "../src/pending.js";
-import { parseConfig } from "../src/config.js";
-import { runCommand } from "../src/run.js";
-import type { DecisionRequest, ModelClient, ModelRequest, TyxtestConfig } from "../src/types.js";
+import { computeSurfaceClosure } from "../src/closure/closure.js";
+import { writeIndex } from "../src/surface/index-file.js";
+import { readPending } from "../src/surface/pending.js";
+import { parseConfig } from "../src/config/config.js";
+import { runCommand } from "../src/commands/run.js";
+import type { DecisionRequest, ModelClient, ModelRequest, TyxtestConfig } from "../src/config/types.js";
 import { tempDir } from "./helpers.js";
 
 function config(overrides: Record<string, unknown> = {}): TyxtestConfig {

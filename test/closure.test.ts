@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { collectClosure, computeSurfaceClosure, hashClosure } from "../src/closure.js";
+import { collectClosure, computeSurfaceClosure, hashClosure } from "../src/closure/closure.js";
 import { tempDir } from "./helpers.js";
 
 function write(file: string, content: string): void {

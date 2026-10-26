@@ -1,8 +1,8 @@
 import fs from "node:fs";
 
-import { readText, writeText } from "./fs-util.js";
-import { prettyJson } from "./json.js";
-import { normalizeRel } from "./paths.js";
+import { readText, writeText } from "../util/fs-util.js";
+import { prettyJson } from "../util/json.js";
+import { normalizeRel } from "../util/paths.js";
 
 export interface IndexSymbolFile {
   hash: string;
