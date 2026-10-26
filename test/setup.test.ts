@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+
+import { INDEX_MERGE_RULE } from "../src/git-files.js";
+import { setupCommand } from "../src/setup.js";
+import { scriptedPrompter, tempDir } from "./helpers.js";
+
+const ANSWERS = [
+  "anthropic",
+  "claude-strong",
+  "TYXTEST_INDEX_KEY",
+  "openai",
+  "gpt-cheap",
+  "TYXTEST_RUN_KEY",
+  "ask-entry",
+  "no",
+];
+
+test("setup writes .gitignore and .gitattributes merge=ours for .index.json", async () => {
+  const cwd = tempDir("tyxtest-setup-");
+  execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+  fs.writeFileSync(path.join(cwd, ".gitignore"), "node_modules/\n");
+  const prompter = scriptedPrompter(ANSWERS);
+  await setupCommand({
+    cwd,
+    prompter,
+    env: { TYXTEST_INDEX_KEY: "present-index-key", TYXTEST_RUN_KEY: "" },
+  });
+
+  const gitignore = fs.readFileSync(path.join(cwd, ".gitignore"), "utf8");
+  assert.ok(gitignore.split(/\r?\n/).includes("node_modules/"));
+  assert.ok(gitignore.split(/\r?\n/).includes(".env"));
+  const attributes = fs.readFileSync(path.join(cwd, ".gitattributes"), "utf8");
+  assert.match(attributes, /\.index\.json/);
+  assert.match(attributes, /merge=ours/);
+  assert.ok(attributes.includes(INDEX_MERGE_RULE));
+  assert.equal(
+    execFileSync("git", ["config", "--local", "--get", "merge.ours.driver"], { cwd, encoding: "utf8" }).trim(),
+    "true",
+  );
+
+  const configText = fs.readFileSync(path.join(cwd, "tyxtest", "tyxtest.config.json"), "utf8");
+  assert.equal(configText.includes("present-index-key"), false);
+  assert.doesNotMatch(configText, /sk-[A-Za-z0-9_-]{8,}/);
+  const config = JSON.parse(configText) as {
+    entryMode: string;
+    indexModel: { provider: string; apiKeyEnv: string };
+    runnerModel: { provider: string; model: string; apiKeyEnv: string };
+    guards: { gitignoreEnv: boolean };
+  };
+  assert.equal(config.entryMode, "ask-entry");
+  assert.equal(config.indexModel.provider, "anthropic");
+  assert.equal(config.indexModel.apiKeyEnv, "TYXTEST_INDEX_KEY");
+  assert.equal(config.runnerModel.provider, "openai");
+  assert.equal(config.runnerModel.model, "gpt-cheap");
+  assert.equal(config.runnerModel.apiKeyEnv, "TYXTEST_RUN_KEY");
+  assert.equal(config.guards.gitignoreEnv, true);
+  assert.ok(prompter.warnings.some((warning) => warning.includes("TYXTEST_RUN_KEY")));
+  assert.equal(
+    prompter.warnings.some((warning) => warning.includes("TYXTEST_INDEX_KEY")),
+    false,
+  );
+
+  await setupCommand({
+    cwd,
+    prompter: scriptedPrompter(ANSWERS),
+    env: { TYXTEST_INDEX_KEY: "present-index-key", TYXTEST_RUN_KEY: "present-run-key" },
+  });
+  const gitignoreAgain = fs.readFileSync(path.join(cwd, ".gitignore"), "utf8");
+  assert.equal(gitignoreAgain.split(/\r?\n/).filter((line) => line.trim() === ".env").length, 1);
+  const attributesAgain = fs.readFileSync(path.join(cwd, ".gitattributes"), "utf8");
+  assert.equal(attributesAgain.split(/\r?\n/).filter((line) => line.includes("merge=ours")).length, 1);
+});
