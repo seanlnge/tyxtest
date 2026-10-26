@@ -20,6 +20,7 @@ test("config defaults", () => {
   assert.equal(config.ignoreUnchanged, true);
   assert.equal(config.baseRef, "origin/main");
   assert.equal(config.triage, false);
+  assert.equal(config.relocateCheck, true);
   assert.deepEqual(config.guards, { literalKeyCheck: true, gitignoreEnv: true });
   assert.equal(config.indexModel, undefined);
   assert.equal(config.runnerModel, undefined);

@@ -1,6 +1,6 @@
 # tyxtest
 
-tyxtest checks product claims against a TypeScript codebase. A test says what the product does ("there is a submit button in the form"). By default a decision model scores that claim against chunks of the import closure. An LLM runs only when the probability is between the pass and fail thresholds, or when `runnerModel.kind` is `llm`.
+tyxtest checks product claims against a TypeScript codebase. A test says what the product does ("there is a submit button in the form"). By default a decision model scores that claim against chunks of the import closure. An LLM runs only when the probability is between the pass and fail thresholds, when a failing test's evidence chunks are gone (`relocateCheck`, on by default), or when `runnerModel.kind` is `llm`.
 
 Checks are static. tyxtest does not run the code, and it does not plug into Vitest or Jest.
 
@@ -15,7 +15,7 @@ npm run build
 node dist/cli.js --help
 ```
 
-`npm test` runs the mechanical harness: config guards, surface ID backfill, p(pass) thresholds, escalation, chunk evidence, cache keys (including option order), unchanged-test skips, import-closure hashing, and setup's git files.
+`npm test` runs the mechanical harness: config guards, surface ID backfill, p(pass) thresholds, escalation, chunk evidence, cache keys (including option order), unchanged-test skips, stale indexes (import drift, entry rename, deleted entry, relocate check), import-closure hashing, and setup's git files.
 
 ## Use
 
@@ -32,6 +32,6 @@ node dist/cli.js run
 
 Put API keys in the environment (or in a gitignored `.env`). The config file stores the variable name in `apiKeyEnv`, never the key. Values that look like `sk-...` are rejected.
 
-`generate` only runs when `tyxtest/` has no surfaces yet. It reads `package.json` entry points (`main`, `bin`, `exports`) and the README, then proposes surfaces: screens for a web app, commands for a CLI, the public API for a library, endpoints for a server. `index` writes each surface's `.index.json`. `run` prints a report and writes `.tyxtest/results.json` and `.tyxtest/junit.xml`. It does not rewrite the index. With `ignoreUnchanged` (the default), a test runs only when its closure, its `surface.md`, or the lockfile differs from `baseRef` plus uncommitted changes.
+`generate` only runs when `tyxtest/` has no surfaces yet. It reads `package.json` entry points (`main`, `bin`, `exports`) and the README, then proposes surfaces: screens for a web app, commands for a CLI, the public API for a library, endpoints for a server. `index` writes each surface's `.index.json`. `run` prints a report and writes `.tyxtest/results.json` and `.tyxtest/junit.xml`. It does not rewrite the index. Before any model call, a closure whose import graph no longer matches the index is used fresh and reported as index stale, a renamed entry from `git diff -M` rewrites `entry:`, and a deleted entry is an error asking for a re-index. With `ignoreUnchanged` (the default), a test runs only when its closure, its `surface.md`, or the lockfile differs from `baseRef` plus uncommitted changes.
 
 Decision runners use `typesafe` (Jev, or Laya via `LAYA_BASE_URL`) and OpenAI Decisions. LLM providers are `anthropic`, `openai`, and `ollama`. Ollama does not need a key. Set `OLLAMA_HOST` if it is not on `http://127.0.0.1:11434`. A model name of `jev` is sent as `jev-latest`.

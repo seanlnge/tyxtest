@@ -6,7 +6,7 @@ import { chunkClosure, evidenceForChunks, type CodeChunk } from "./chunk.js";
 import { loadConfig, requireModels } from "./config.js";
 import { collectClosure, computeSurfaceClosure, type ClosureFile } from "./closure.js";
 import { discoverSurfaces, filterSurfaces, type Surface } from "./discover.js";
-import { affectsTest, changedFiles, diffPatch } from "./diff.js";
+import { affectsTest, changedFiles, diffPatch, renamedPaths } from "./diff.js";
 import { loadEnvFile } from "./env.js";
 import { applyEvidenceCheck } from "./evidence.js";
 import { readIndex, type SurfaceIndex } from "./index-file.js";
@@ -17,7 +17,7 @@ import { normalizeRel } from "./paths.js";
 import { createModelClient } from "./providers.js";
 import { formatReport, writeReports, type ReportedTest } from "./reporter.js";
 import { listSourceFiles } from "./repo-files.js";
-import { readTests } from "./surface.js";
+import { readTests, setFrontmatterField } from "./surface.js";
 import type { Citation, ModelClient, ModelSource, TyxtestConfig, Verdict } from "./types.js";
 import { aggregateVerdicts, EVIDENCE_OPTIONS, exitCodeFor, thresholdVerdict, VERDICT_OPTIONS } from "./verdict.js";
 
@@ -110,9 +110,10 @@ export async function runCommand(options: {
               test,
               closure: searched,
               hashSource: searched.files,
+              symbols: [],
               runner: runnerClient(),
               escalate: escalateClient(),
-              fresh: false,
+              indexModel: indexClient,
               forceUnsure: true,
               cache,
               lockfileHash,
@@ -128,19 +129,27 @@ export async function runCommand(options: {
       throw new Error(`Surface "${surface.relativeDir}" is not indexed. Run \`tyxtest index\` locally.`);
     }
 
-    const entry = index.entry[0] ?? surface.entry;
-    if (!entry) {
+    const indexedEntry = index.entry[0] ?? surface.entry;
+    if (!indexedEntry) {
       throw new Error(`Surface "${surface.relativeDir}" is not indexed. Run \`tyxtest index\` locally.`);
     }
+    const entry = resolveMovedEntry({
+      cwd: options.cwd,
+      surface,
+      entry: indexedEntry,
+      baseRef: config.baseRef,
+      stderr,
+    });
     const live = computeSurfaceClosure({
       cwd: options.cwd,
       entry,
       depth: config.closureDepth,
       parentClosure: parentClosure(surface, indexes),
     });
-    const fresh = live.closureHash === index.closureHash;
-    if (!fresh) {
-      stderr(`Index for "${surface.relativeDir}" does not match the current code. Run \`tyxtest index\` to refresh it.`);
+    if (closurePathsDiffer(index.closure, live.files)) {
+      stderr(
+        `index stale: "${surface.relativeDir}" import closure changed. Run \`tyxtest index\` to refresh it.`,
+      );
     }
     const diffText = config.triage
       ? diffPatch(
@@ -170,9 +179,10 @@ export async function runCommand(options: {
           test,
           closure: live,
           hashSource: index.closure,
+          symbols: index.files.flatMap((file) => file.symbols),
           runner: runnerClient(),
           escalate: escalateClient(),
-          fresh,
+          indexModel: indexClient,
           forceUnsure: false,
           cache,
           lockfileHash,
@@ -200,9 +210,10 @@ async function judgeTest(options: {
   test: { id: string; text: string };
   closure: { files: ClosureFile[]; closureHash: string };
   hashSource: Array<{ path: string; hash: string }>;
+  symbols: string[];
   runner: ModelClient;
   escalate: ModelClient;
-  fresh: boolean;
+  indexModel: () => ModelClient;
   forceUnsure: boolean;
   cache: { entries: Record<string, CacheHit> };
   lockfileHash: string;
@@ -217,7 +228,7 @@ async function judgeTest(options: {
     optionOrder: VERDICT_OPTIONS,
   });
   const hit = options.cache.entries[key];
-  if (options.fresh && !options.forceUnsure && hit && hit.testId === options.test.id && isJudged(hit.verdict)) {
+  if (!options.forceUnsure && hit && hit.testId === options.test.id && isJudged(hit.verdict)) {
     return {
       surface: options.surface.relativeDir,
       id: options.test.id,
@@ -262,17 +273,90 @@ async function judgeTest(options: {
       ? await judgeWithLlm(options, options.runner)
       : await judgeWithDecision(options);
   let verdict = judged.verdict;
+  let explanation = judged.explanation;
+  if (verdict === "fail" && options.config.relocateCheck && !options.forceUnsure) {
+    const relocated = await relocateIfEvidenceGone(options, explanation);
+    verdict = relocated.verdict;
+    explanation = relocated.explanation;
+  }
   if (options.forceUnsure && verdict !== "skipped") verdict = "unsure";
-  if (options.fresh && !options.forceUnsure && isJudged(verdict)) {
+  if (!options.forceUnsure && isJudged(verdict)) {
     options.cache.entries[key] = {
       testId: options.test.id,
       verdict,
       evidence: judged.evidence,
-      explanation: judged.explanation,
+      explanation,
     };
     options.onCacheWrite();
   }
-  return { ...judged, verdict };
+  return { ...judged, verdict, explanation };
+}
+
+async function relocateIfEvidenceGone(
+  options: {
+    cwd: string;
+    surface: Surface;
+    test: { id: string; text: string };
+    closure: { files: ClosureFile[]; closureHash: string };
+    symbols: string[];
+    indexModel: () => ModelClient;
+  },
+  explanation: string,
+): Promise<{ verdict: "fail" | "unsure"; explanation: string }> {
+  const chunks = chunkClosure(options.cwd, options.closure.files);
+  if (!evidenceChunksGone(options.symbols, chunks)) return { verdict: "fail", explanation };
+  const response = await options.indexModel().complete({
+    purpose: "relocate",
+    system:
+      'Indexed evidence for this claim is gone. Reply with JSON only: {"found":true,"path":"relative/file.ts"} when the feature exists outside the indexed closure, or {"found":false}.',
+    prompt: [
+      `Surface: ${options.surface.name}`,
+      `Test [${options.test.id}] ${options.test.text}`,
+      `Missing symbols: ${options.symbols.join(", ") || "(none)"}`,
+      `Indexed closure:\n${options.closure.files.map((file) => file.path).join("\n") || "(none)"}`,
+      `Repository files:\n${listSourceFiles(options.cwd).join("\n") || "(none)"}`,
+    ].join("\n\n"),
+  });
+  const record = asRecord(parseModelJson(response), "Relocate response");
+  if (record.found !== true) return { verdict: "fail", explanation };
+  const where = typeof record.path === "string" && record.path.trim() ? normalizeRel(record.path) : "another file";
+  const note = `Proposed index update: [${options.test.id}] ${options.test.text} now lives in ${where}.`;
+  addProposedNotes(options.cwd, options.surface.relativeDir, [note]);
+  return { verdict: "unsure", explanation: note };
+}
+
+function evidenceChunksGone(symbols: string[], chunks: Array<{ name: string }>): boolean {
+  if (symbols.length === 0) return false;
+  const names = new Set(chunks.map((chunk) => chunk.name));
+  return symbols.some((symbol) => !names.has(symbol));
+}
+
+function closurePathsDiffer(indexed: Array<{ path: string }>, live: Array<{ path: string }>): boolean {
+  if (indexed.length !== live.length) return true;
+  const paths = new Set(live.map((file) => normalizeRel(file.path)));
+  return indexed.some((file) => !paths.has(normalizeRel(file.path)));
+}
+
+function resolveMovedEntry(options: {
+  cwd: string;
+  surface: Surface;
+  entry: string;
+  baseRef: string;
+  stderr: (message: string) => void;
+}): string {
+  const entry = normalizeRel(options.entry);
+  if (fs.existsSync(path.join(options.cwd, entry))) return entry;
+  const renamed = renamedPaths(options.cwd, options.baseRef).get(entry);
+  if (renamed && fs.existsSync(path.join(options.cwd, renamed))) {
+    const markdown = fs.readFileSync(options.surface.markdownPath, "utf8");
+    const updated = setFrontmatterField(markdown, "entry", renamed);
+    fs.writeFileSync(options.surface.markdownPath, updated.endsWith("\n") ? updated : `${updated}\n`);
+    options.stderr(`Entry for "${options.surface.relativeDir}" renamed from ${entry} to ${renamed}. Updated entry:.`);
+    return renamed;
+  }
+  throw new Error(
+    `Entry ${entry} for surface "${options.surface.relativeDir}" was deleted. Run \`tyxtest index\` to re-index the surface.`,
+  );
 }
 
 async function judgeWithDecision(options: {

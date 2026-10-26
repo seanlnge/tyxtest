@@ -53,6 +53,7 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
     runnerModel: { kind: string; provider: string; model: string; apiKeyEnv: string };
     escalateModel: unknown;
     ignoreUnchanged: boolean;
+    relocateCheck: boolean;
     guards: { gitignoreEnv: boolean };
   };
   assert.equal(config.entryMode, "ask-entry");
@@ -65,6 +66,7 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   assert.equal(config.runnerModel.apiKeyEnv, "TYXTEST_RUN_KEY");
   assert.equal(config.escalateModel, null);
   assert.equal(config.ignoreUnchanged, true);
+  assert.equal(config.relocateCheck, true);
   assert.equal(config.guards.gitignoreEnv, true);
   assert.ok(prompter.warnings.some((warning) => warning.includes("TYXTEST_RUN_KEY")));
   assert.equal(

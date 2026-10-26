@@ -52,6 +52,37 @@ export function diffPatch(cwd: string, baseRef: string, paths: string[]): string
   }
 }
 
+/** Old path to new path for renames reported by `git diff -M`. */
+export function renamedPaths(cwd: string, baseRef: string): Map<string, string> {
+  const renamed = new Map<string, string>();
+  for (const args of [
+    ["diff", "-M", "--name-status", "--relative", baseRef],
+    ["diff", "-M", "--name-status", "--relative", "HEAD"],
+  ]) {
+    let text = "";
+    try {
+      text = execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      continue;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^R\d*\t([^\t]+)\t([^\t]+)$/.exec(line);
+      if (!match) continue;
+      renamed.set(normalizeRel(unquoteGitPath(match[1])), normalizeRel(unquoteGitPath(match[2])));
+    }
+  }
+  return renamed;
+}
+
+function unquoteGitPath(value: string): string {
+  if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return value;
+  return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+}
+
 export function affectsTest(input: {
   changed: Set<string>;
   lockfileChanged: boolean;

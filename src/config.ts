@@ -110,6 +110,7 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     verdictRule: pickVerdictRule(raw.verdictRule),
     unsureBlocks: pickBoolean(raw.unsureBlocks, false, "unsureBlocks"),
     triage: pickBoolean(raw.triage, false, "triage"),
+    relocateCheck: pickBoolean(raw.relocateCheck, true, "relocateCheck"),
     closureDepth: pickDepth(raw.closureDepth),
     guards: {
       literalKeyCheck: pickBoolean(guards.literalKeyCheck, true, "guards.literalKeyCheck"),

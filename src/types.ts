@@ -42,11 +42,12 @@ export interface TyxtestConfig {
   verdictRule: "worst";
   unsureBlocks: boolean;
   triage: boolean;
+  relocateCheck: boolean;
   closureDepth: number | null;
   guards: Guards;
 }
 
-export type ModelPurpose = "index" | "run" | "resolve-entry" | "generate" | "search";
+export type ModelPurpose = "index" | "run" | "resolve-entry" | "generate" | "search" | "relocate";
 
 export interface ModelRequest {
   purpose: ModelPurpose;
