@@ -94,6 +94,28 @@ test("run passes with valid evidence, caches it, and does not write the index", 
   assert.equal(fs.existsSync(path.join(cwd, ".tyxtest/junit.xml")), true);
 });
 
+test("default runs reuse cache without requiring a valid git base ref", async () => {
+  const cwd = project({ ignoreUnchanged: undefined, baseRef: "missing-base-ref" });
+  writeFreshIndex(cwd);
+  let calls = 0;
+  const model: ModelClient = {
+    async complete() {
+      calls += 1;
+      return pass;
+    },
+  };
+  await runCommand({ cwd, model, interactive: true, env: {} });
+  const second = await runCommand({
+    cwd,
+    model: { async complete() { throw new Error("cache should avoid model calls"); } },
+    interactive: true,
+    env: {},
+  });
+  assert.equal(calls, 1);
+  assert.equal(second.results[0]?.cached, true);
+  assert.equal(second.results[0]?.verdict, "pass");
+});
+
 test("run -A rejudges a cached test and ignores unchanged skips", async () => {
   const cwd = project();
   writeFreshIndex(cwd);
@@ -130,6 +152,11 @@ test("run -A rejudges a cached test and ignores unchanged skips", async () => {
 
 test("an LLM runner judges once even when reruns is 2", async () => {
   const failing = project();
+  fs.writeFileSync(
+    path.join(failing, "src/login.ts"),
+    'import { helper } from "./other.js";\nexport function LoginForm() { return "TOKEN_LOGIN_SOURCE"; }\nexport function OtherFeature() { return helper(); }\n',
+  );
+  fs.writeFileSync(path.join(failing, "src/other.ts"), 'export function helper() { return "TOKEN_HELPER_CONTEXT"; }\n');
   writeFreshIndex(failing);
   const failModel = scriptedModel([fail]);
   let report = "";
@@ -143,11 +170,62 @@ test("an LLM runner judges once even when reruns is 2", async () => {
     },
   });
   assert.equal(failModel.requests.length, 1);
+  assert.match(failModel.requests[0]?.prompt ?? "", /TOKEN_HELPER_CONTEXT/);
   assert.equal(failed.results[0]?.verdict, "fail");
   assert.deepEqual(failed.results[0]?.runs, ["fail"]);
   assert.equal(failed.exitCode, 1);
   assert.match(report, /fail {2}\[submit-exists\]/);
   assert.match(report, /0 pass, 1 fail, 0 unsure/);
+});
+
+test("LLM passes can cite edited source and newly imported files without reindexing", async () => {
+  const cwd = project();
+  writeFreshIndex(cwd);
+  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json"));
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), 'export function LoginForm() { return "EDITED_LOGIN"; }\n');
+  const edited = await runCommand({ cwd, model: scriptedModel([pass]), env: {}, stdout: () => {} });
+  assert.equal(edited.results[0]?.verdict, "pass");
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), 'import { submit } from "./new.js";\nexport function LoginForm() { return submit(); }\n');
+  fs.writeFileSync(path.join(cwd, "src/new.ts"), 'export function submit() { return "NEW_IMPORT"; }\n');
+  const model = scriptedModel([JSON.stringify({ verdict: "pass", evidence: [{ file: "src/new.ts", line: 1 }] })]);
+  const added = await runCommand({ cwd, model, env: {}, stdout: () => {}, stderr: () => {} });
+  assert.equal(added.results[0]?.verdict, "pass");
+  assert.match(model.requests[0]?.prompt ?? "", /NEW_IMPORT/);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
+});
+
+test("LLM citation checks reject nonexistent, out-of-closure, and invalid line citations", async () => {
+  const cwd = project();
+  writeFreshIndex(cwd);
+  for (const citation of [
+    { file: "src/missing.ts", line: 1 },
+    { file: "src/other.ts", line: 1 },
+    { file: "src/login.ts", line: 0 },
+    { file: "src/login.ts", line: 1.5 },
+    { file: "src/login.ts", line: 99 },
+  ]) {
+    const model = scriptedModel([JSON.stringify({ verdict: "pass", evidence: [citation] })]);
+    const outcome = await runCommand({ cwd, model, all: true, env: {}, stdout: () => {} });
+    assert.equal(outcome.results[0]?.verdict, "unsure", JSON.stringify(citation));
+  }
+});
+
+test("LLM citations are checked against the provided snapshot, not a later disk read", async () => {
+  const cwd = project();
+  writeFreshIndex(cwd);
+  const outcome = await runCommand({
+    cwd,
+    env: {},
+    stdout: () => {},
+    model: {
+      async complete(request) {
+        assert.match(request.prompt, /TOKEN_LOGIN_SOURCE/);
+        fs.writeFileSync(path.join(cwd, "src/login.ts"), "");
+        return pass;
+      },
+    },
+  });
+  assert.equal(outcome.results[0]?.verdict, "pass");
 });
 
 test("unindexed surfaces fail closed and search mode forces unsure without writing an index", async () => {

@@ -105,7 +105,7 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     escalateModel: pickModel(raw.escalateModel, "escalateModel"),
     fallback: pickBoolean(raw.fallback, true, "fallback"),
     thresholds: pickThresholds(raw.thresholds),
-    ignoreUnchanged: pickBoolean(raw.ignoreUnchanged, true, "ignoreUnchanged"),
+    ignoreUnchanged: pickBoolean(raw.ignoreUnchanged, false, "ignoreUnchanged"),
     baseRef: pickBaseRef(raw.baseRef),
     entryMode: pickEnum(raw.entryMode, ENTRY_MODES, "ask-plain", "entryMode"),
     nonInteractive: pickEnum(raw.nonInteractive, NON_INTERACTIVE, "fail", "nonInteractive"),

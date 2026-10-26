@@ -13,7 +13,7 @@
       "path": "src/commands/generate.ts"
     },
     {
-      "hash": "a28a6dcdbd47442e14c0b43311b1fa9a9f328c19efed8354354671d0ce97cd1b",
+      "hash": "d33f302664975c3893d132f6be7848d39a6b26eea72101b14e271636e3bc0164",
       "path": "src/commands/index-command.ts"
     },
     {
@@ -21,11 +21,11 @@
       "path": "src/commands/prompter.ts"
     },
     {
-      "hash": "ea86698617bb4938ce50791af4570f55fd21ea45d72411d7be0f5a5e5e94fff5",
+      "hash": "68396e19e21bf8eeec67a00ac3327ffedb8db00761bb0b882b846bbf44a5a011",
       "path": "src/commands/setup.ts"
     },
     {
-      "hash": "346d11930013c961a0fa59645cd42699281aa6fce43b72ae647cfd20318ba9d3",
+      "hash": "bd1fe00a7f50a9bc009413b540ce479fde1bbf31251156165056303b3e1cb41b",
       "path": "src/config/config.ts"
     },
     {
@@ -33,7 +33,7 @@
       "path": "src/config/env.ts"
     },
     {
-      "hash": "600fd3b0afcb02ec83bd729c67e13a976066f1dd15dd0c5584fcdbeded95dfeb",
+      "hash": "62cd72df6c9a76546306fce8b911cb7f68dbe55f483a8f26ca2283497b866dc1",
       "path": "src/config/types.ts"
     },
     {
@@ -65,7 +65,7 @@
       "path": "src/surface/pending.ts"
     },
     {
-      "hash": "934656b24db8509570a8f30c1c89aa16e714a7ee030a2a69e9f38facfae72757",
+      "hash": "391e4632e27487ee44c46694ecea52834af411aca2b2113f008e117022b8b6ed",
       "path": "src/surface/surface.ts"
     },
     {
@@ -85,13 +85,13 @@
       "path": "src/util/paths.ts"
     }
   ],
-  "closureHash": "2ab6e72e6718dfd7ba6c98f13a54d554254467943e8665d810d777036b3132a4",
+  "closureHash": "562a2a784a9f20b7e7ccd313ec59d66bbf602585aa1e2b7e9d9494cdc0ad143a",
   "entry": [
     "src/commands/setup.ts"
   ],
   "files": [
     {
-      "hash": "ea86698617bb4938ce50791af4570f55fd21ea45d72411d7be0f5a5e5e94fff5",
+      "hash": "68396e19e21bf8eeec67a00ac3327ffedb8db00761bb0b882b846bbf44a5a011",
       "path": "src/commands/setup.ts",
       "symbols": [
         "renderConfig",
@@ -102,8 +102,11 @@
       "hash": "ce1c6643ef0d161d84ce2247a58c8bb43c5de45b481a380c3e974578cc2b10b9",
       "path": "src/git/git-files.ts",
       "symbols": [
+        "INDEX_MERGE_RULE",
+        "PENDING_GITIGNORE",
         "ensureEnvGitignore",
         "ensureIndexMergeAttributes",
+        "ensureLines",
         "ensureOursMergeDriver"
       ]
     },
@@ -133,7 +136,19 @@
         },
         {
           "path": "src/git/git-files.ts",
+          "symbol": "ensureLines"
+        },
+        {
+          "path": "src/git/git-files.ts",
           "symbol": "ensureOursMergeDriver"
+        },
+        {
+          "path": "src/git/git-files.ts",
+          "symbol": "INDEX_MERGE_RULE"
+        },
+        {
+          "path": "src/git/git-files.ts",
+          "symbol": "PENDING_GITIGNORE"
         }
       ],
       "testId": "configures-git"

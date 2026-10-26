@@ -18,7 +18,7 @@ Usage:
 setup     write tyxtest/tyxtest.config.json, ignore .env, mark .index.json merge=ours
 generate  propose the first surface tree when tyxtest/ has no surfaces
 index     map each surface onto its import closure and write .index.json. --pending applies suggestions; --fix reindexes all surfaces
-run       judge each test on its indexed chunks. Jev retries every non-pass; uncertain aggregates escalate once. The escalation model does not rerun.
+run       judge each test on its fresh import closure, with indexed evidence. Jev retries every non-pass; uncertain aggregates escalate once. The escalation model does not rerun.
 
 Config lives in tyxtest/tyxtest.config.json and names env vars. It must not contain API keys.
 `;
@@ -46,7 +46,7 @@ Map each selected surface onto its import closure and write .index.json.
 `,
   run: `tyxtest run [-A] [--non-interactive] [--verbose] [--cached] [surface...]
 
-Judge each test against the chunks indexed for that test. Jev scores the claim and its evidence in one request. Every non-pass is retried up to reruns more times (default 2, three attempts), stopping early on pass. Attempts combine using verdictRule (default worst); an unsure aggregate escalates once. The escalation model does not rerun; its single verdict is the test result. An LLM also runs once when the decision API fails or when runnerModel.kind is llm. Runs do not write .index.json.
+Judge each test against its fresh import closure, including callers and dependencies outside the indexed evidence symbols. Indexed chunks select evidence, not the complete verdict context. Jev scores the claim and its evidence in one request. Every non-pass is retried up to reruns more times (default 2, three attempts), stopping early on pass. Attempts combine using verdictRule (default worst); an unsure aggregate escalates once. The escalation model does not rerun; its single verdict is the test result. An LLM also runs once when the decision API fails or when runnerModel.kind is llm. Runs do not write .index.json.
 
   -A, --all           judge every test, ignoring the cache and unchanged skips
   --non-interactive   do not prompt

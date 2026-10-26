@@ -3,7 +3,8 @@ import fs from "node:fs";
 import { readText, writeText } from "../util/fs-util.js";
 import { hashContent } from "../util/hash.js";
 import { prettyJson } from "../util/json.js";
-import type { Citation, Verdict } from "../config/types.js";
+import type { Citation, TyxtestConfig, Verdict } from "../config/types.js";
+import type { FlowRecord } from "../surface/index-file.js";
 
 export interface CacheKeyInput {
   testId: string;
@@ -11,15 +12,21 @@ export interface CacheKeyInput {
   closureHash: string;
   lockfileHash: string;
   optionOrder: readonly string[];
+  /** Versioned identity of the judgment policy and rendered context. */
+  judgmentContext: string;
   /** Indexed chunk identities. Omitted and empty mean the same key. */
   chunkIds?: readonly string[];
 }
 
 export interface CacheHit {
   testId: string;
+  /** Claim text needed to ensure triage does not reuse a renamed claim. */
+  testText?: string;
   verdict: Verdict;
   evidence: Citation[];
   explanation: string;
+  /** Missing on legacy entries; those entries are not reusable via triage. */
+  judgmentContext?: string;
 }
 
 export interface VerdictCache {
@@ -27,7 +34,62 @@ export interface VerdictCache {
 }
 
 /** Bump when the text sent to the model changes without the source files changing. */
-const CHUNK_RENDER = "constants";
+const CHUNK_RENDER = "faithful-closure-v1";
+const JUDGMENT_CONTEXT_VERSION = "jctx-v1";
+
+export interface JudgmentSurface {
+  relativeDir: string;
+  name: string;
+  description: string;
+  entry?: string;
+}
+
+/** Fingerprint only settings and content that can change the resulting judgment. */
+export function judgmentContextFingerprint(
+  config: TyxtestConfig,
+  surface: JudgmentSurface,
+  flows: readonly FlowRecord[],
+  chunkIds: readonly string[] = [],
+): string {
+  const model = (value: TyxtestConfig["runnerModel"]) =>
+    value ? { provider: value.provider, model: value.model, kind: value.kind ?? null } : null;
+  const context = {
+    version: JUDGMENT_CONTEXT_VERSION,
+    promptSchema: { verdict: ["pass", "fail"], evidence: ["yes", "no"], triage: ["changes", "unchanged"] },
+    surface: {
+      relativeDir: surface.relativeDir,
+      name: surface.name,
+      description: surface.description,
+      entry: surface.entry ?? null,
+    },
+    config: {
+      runnerModel: model(config.runnerModel),
+      indexModel: model(config.indexModel),
+      escalate: config.escalate,
+      escalateModel: model(config.escalateModel),
+      fallback: config.fallback,
+      thresholds: { pass: config.thresholds.pass, fail: config.thresholds.fail },
+      reruns: config.reruns,
+      verdictRule: config.verdictRule,
+      triage: config.triage,
+      relocateCheck: config.relocateCheck,
+      closureDepth: config.closureDepth,
+      chunkMaxTokens: config.chunkMaxTokens,
+    },
+    flows: flows.map((flow) => ({
+      testId: flow.testId,
+      steps: flow.steps.map((step) => ({
+        id: step.id,
+        text: step.text,
+        entry: step.entry,
+        chunks: step.chunks.map((chunk) => ({ path: chunk.path, symbol: chunk.symbol })),
+      })),
+      closure: flow.closure.map((item) => ({ path: item.path, hash: item.hash })),
+    })),
+    chunkIds: [...chunkIds],
+  };
+  return `${JUDGMENT_CONTEXT_VERSION}:${hashContent(JSON.stringify(context))}`;
+}
 
 export function cacheKey(input: CacheKeyInput): string {
   return hashContent(
@@ -37,6 +99,7 @@ export function cacheKey(input: CacheKeyInput): string {
       input.closureHash,
       input.lockfileHash,
       input.optionOrder.join("\0"),
+      input.judgmentContext,
       (input.chunkIds ?? []).join("\0"),
       CHUNK_RENDER,
     ].join("\0"),

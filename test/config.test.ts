@@ -19,7 +19,7 @@ test("config defaults", () => {
   assert.equal(config.escalateModel, undefined);
   assert.equal(config.fallback, true);
   assert.deepEqual(config.thresholds, { pass: 0.9, fail: 0.1 });
-  assert.equal(config.ignoreUnchanged, true);
+  assert.equal(config.ignoreUnchanged, false);
   assert.equal(config.baseRef, "origin/main");
   assert.equal(config.triage, false);
   assert.equal(config.relocateCheck, true);

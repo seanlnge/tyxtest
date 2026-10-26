@@ -39,7 +39,7 @@ export interface SurfaceIndex {
   entry: string[];
   files: IndexSymbolFile[];
   notes: string[];
-  /** Chunks that implement each test. A test does not inherit the surface closure. */
+  /** Evidence candidates for each test; verdicts also receive the fresh import closure. */
   tests?: IndexedTest[];
   flows?: FlowRecord[];
 }

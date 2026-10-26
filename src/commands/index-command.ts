@@ -106,7 +106,7 @@ async function indexSurface(options: {
     system: [
       "You map each test to the functions, components, or classes that implement that claim.",
       'Reply with JSON only: {"tests":[{"testId":"","chunks":[{"path":"","symbol":""}]}],"files":[{"path":"","symbols":[""]}],"notes":[""],"flows":[{"testId":"","steps":[{"id":"","text":"","entry":"","chunks":[{"path":"","symbol":""}]}]}]}',
-      "A chunk is one symbol: a function, component, class, or constant. Give each test only the symbols that implement that claim. Do not assign the surface closure to every test.",
+      "A chunk is one symbol: a function, component, class, or constant. Use default for anonymous default functions or classes. For module-level execution such as route registration, use the source filename (for example routes.ts) as the symbol to select its file-context chunk. Give each test only the evidence symbols that implement that claim; verdicts also receive the fresh import closure.",
       "Copy testId from the provided ids. Do not invent a slug.",
       "Stay inside the provided files.",
       "If a test is a multi-step path, store it as a flow. Each step lists its own chunks. Stop at external boundaries such as a redirect to Stripe. Do not describe what the external service renders. Record the steps and do not count them.",

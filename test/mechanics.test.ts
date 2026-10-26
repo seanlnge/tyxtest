@@ -560,6 +560,7 @@ test("generate asks one batched prompt up to maxQuestions and flags the overflow
   fs.mkdirSync(path.join(cwd, "tyxtest"), { recursive: true });
   fs.writeFileSync(path.join(cwd, "src/login.ts"), "export function LoginForm() {\n  return \"submit\";\n}\n");
   const asks: string[] = [];
+  let generateCalls = 0;
   const prompter = scriptedPrompter(["", "accept"]);
   const originalAsk = prompter.ask.bind(prompter);
   prompter.ask = async (question: string) => {
@@ -569,6 +570,7 @@ test("generate asks one batched prompt up to maxQuestions and flags the overflow
   const model: ModelClient = {
     async complete(request: ModelRequest) {
       if (request.purpose === "generate") {
+        generateCalls += 1;
         return JSON.stringify({
           surfaces: [
             {
@@ -597,9 +599,35 @@ test("generate asks one batched prompt up to maxQuestions and flags the overflow
   });
   const questionAsks = asks.filter((question) => question.startsWith("Answer these"));
   assert.equal(questionAsks.length, 1);
+  assert.equal(generateCalls, 1, "blank answers keep the initial proposal without another model call");
   assert.match(questionAsks[0] ?? "", /Which file is the login form/);
   assert.doesNotMatch(questionAsks[0] ?? "", /empty passwords/);
   assert.ok(prompter.logs.some((line) => line.includes("over maxQuestions") && line.includes("empty passwords")));
+});
+
+test("generate uses a nonblank batched answer to revise the proposal", async () => {
+  const cwd = tempDir("tyxtest-clarify-");
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "tyxtest"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), "export function LoginForm() { return true; }\n");
+  fs.writeFileSync(path.join(cwd, "src/auth.ts"), "export function Auth() { return true; }\n");
+  const requests: ModelRequest[] = [];
+  const model: ModelClient = {
+    async complete(request: ModelRequest) {
+      requests.push(request);
+      if (request.purpose === "generate") {
+        return requests.filter((item) => item.purpose === "generate").length === 1
+          ? JSON.stringify({ surfaces: [{ slug: "login", name: "Login", entry: "src/login.ts", tests: [{ text: "Uses login" }] }], questions: [{ prompt: "Which auth flow?", guess: "login" }] })
+          : JSON.stringify({ surfaces: [{ slug: "password-reset", name: "Password reset", entry: "src/auth.ts", tests: [{ text: "Starts a password reset" }] }], questions: [] });
+      }
+      return JSON.stringify({ files: [{ path: "src/auth.ts", symbols: ["Auth"] }], notes: [] });
+    },
+  };
+  await generateCommand({ cwd, model, prompter: scriptedPrompter(["The password reset flow", "accept"]), interactive: true, config: config(), env: {} });
+  assert.equal(requests.filter((request) => request.purpose === "generate").length, 2);
+  assert.match(requests[1]?.prompt ?? "", /The password reset flow/);
+  const markdown = fs.readFileSync(path.join(cwd, "tyxtest/password-reset/surface.md"), "utf8");
+  assert.match(markdown, /Starts a password reset/);
 });
 
 test("maxQuestions 0 never asks the question prompt", async () => {

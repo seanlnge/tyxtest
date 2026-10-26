@@ -52,6 +52,8 @@ test("help run and run -h print the run flags", async () => {
     assert.match(out, /Every non-pass is retried/);
     assert.match(out, /an unsure aggregate escalates once/);
     assert.match(out, /The escalation model does not rerun/);
+    assert.match(out, /fresh import closure/);
+    assert.match(out, /Indexed chunks select evidence, not the complete verdict context/);
   }
 });
 

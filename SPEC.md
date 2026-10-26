@@ -54,8 +54,8 @@ Re-indexing happens when a test changes, when code in the closure changes, or wh
 
 `tyxtest run` sends each test to a decision model by default (Jev, Laya, or OpenAI Decisions), along with only the code in its closure. A decision model picks from fixed options and returns calibrated probabilities; it can't generate text. Jev costs $0.042 per million input tokens and answers in about 0.2s, so most tests never reach an LLM.
 
-1. **Chunk.** The TS compiler API splits the closure into chunks by syntax: one per function, component, or class. Chunks are rebuilt every run and never stored, so code that grows or moves within the closure needs no handling. A chunk over the size cap (`chunkMaxTokens`) is split by its inner blocks. Chunking is required, because decision model accuracy drops as irrelevant context grows.
-2. **Verdict.** The decision model returns p(pass) for the test against the closure. Option order is fixed and part of the cache key, since probabilities can shift when the order changes.
+1. **Chunk.** The TS compiler API splits the closure into chunks by syntax, retaining named and anonymous exports, declarations, and top-level executable statements. Chunks are rebuilt every run and never stored, so code that grows or moves within the closure needs no handling. Oversized chunks are split only with their enclosing context preserved; conditions, signatures, and execution ordering must not be silently removed. `chunkMaxTokens` is a splitting target, not permission to truncate source: an indivisible or context-heavy chunk can exceed it.
+2. **Verdict.** The decision model returns p(pass) for the test against its full fresh import closure, including callers and dependencies outside the indexed evidence symbols. The index selects evidence candidates, not the entire judgment context. Option order is fixed and part of the cache key, since probabilities can shift when the order changes.
 3. **Evidence.** The model scores each chunk with a yes/no question: "does this chunk implement the claim?" The highest-scoring chunks are the evidence. Evidence is stored as symbol + content hash (e.g. `LoginForm.tsx#handleSubmit@a3f9`), not line numbers, and resolved to file:line only for display. Shifted lines don't break a citation, and a hash mismatch means the evidence itself changed. Locations come from tyxtest's chunker, not model output, so a citation can't be hallucinated.
 4. **Threshold.** p(pass) maps to a verdict:
 
@@ -65,9 +65,11 @@ Re-indexing happens when a test changes, when code in the closure changes, or wh
 | 0.1 or lower | fail | blocks |
 | Between | escalate to LLM | depends on LLM result |
 
-Escalated tests go to `escalateModel` if one is set, otherwise to the index model. Escalation should be rare, so no separate model is required. The escalation model returns `pass`, `fail`, or `unsure` with file:line citations, which the harness checks against the index hashes; an uncited `pass` becomes `unsure`. A non-pass gets 2 reruns: all 3 fail is a **fail** (blocks), and any fail short of that is **unsure** (warns).
+Escalated tests go to `escalateModel` if one is set, otherwise to the index model. Escalation should be rare, so no separate model is required. The escalation model returns `pass`, `fail`, or `unsure` with file:line citations, which the harness checks against the live source snapshot provided in that judgment, not old index hashes; an uncited `pass` becomes `unsure`. A non-pass gets 2 reruns: all 3 fail is a **fail** (blocks), and any fail short of that is **unsure** (warns).
 
 With `escalate: false`, nothing escalates: a test between the thresholds is reported as `unsure` (warns), and no LLM is called during runs.
+
+Escalated LLM judgments receive the full import closure for the test, not only its indexed evidence chunks. Flow-step escalations receive that step's closure.
 
 Tests run in parallel, up to `concurrency` at a time (default 8). Per-chunk evidence calls within a test also run in parallel, and requests back off on provider rate limits.
 
@@ -92,19 +94,19 @@ Limits:
 
 ## Caching and git
 
-Verdicts are cached per test, keyed by test ID + test text + closure hash + lockfile hash. When none of these change, the last verdict is reused and the model isn't called. That removes flakiness on unchanged code and keeps cost proportional to what a change touches.
+Verdicts are cached per test, keyed by surface identity and description + test ID and text + closure hash + lockfile hash + indexed evidence identities + a versioned judgment-policy fingerprint. The fingerprint includes models, thresholds, retry/escalation policy, context settings, option order, and flow step semantics. A changed model, stricter threshold, or revised flow cannot reuse a verdict accepted under an older policy. Display-only settings do not invalidate verdicts. When the judgment inputs are unchanged, the last verdict is reused and the model isn't called.
 
 The closure covers the full import graph, not just the files listed in the index. If someone edits `Button.tsx` and `LoginForm.tsx` imports it, every surface that uses it reruns. `node_modules` is covered by the lockfile hash, not walked. Depth is unlimited by default and can be capped in config.
 
-Optional triage (`triage: true`, off by default): on a cache miss, the decision model scores whether the diff could change the test's claim. Below the triage threshold, the cached verdict is reused. A wrong skip is a false green, so this is opt-in.
+Optional triage (`triage: true`, off by default): on a cache miss, the decision model scores whether the diff could change the test's claim. Below the triage threshold, a cached verdict with the same surface, claim, and judgment policy can be reused. Triage must not bypass policy invalidation. A wrong skip is a false green, so this is opt-in.
 
-With `ignoreUnchanged` on (the default), `tyxtest run` checks git before anything else. It diffs against `baseRef` (default `origin/main`) plus uncommitted changes, and runs a test only if one of these changed:
+By default, `tyxtest run` uses the verdict cache rather than Git to decide whether a test needs a model call. When its cache key is unchanged, the prior verdict is reused. Set `ignoreUnchanged: true` to opt into Git-based skipping against `baseRef` (default `origin/main`) plus uncommitted changes. In that mode a test runs only if one of these changed:
 
 - A file in its closure
 - Its `surface.md`
 - The lockfile
 
-Every other test is reported as `skipped (unchanged)`. This works in CI without a persisted verdict cache, since the diff alone decides what runs.
+Every other test is reported as `skipped (unchanged)`. This opt-in mode works in CI without a persisted verdict cache, since the diff alone decides what runs.
 
 ## Stale indexes
 
@@ -168,7 +170,7 @@ Git behavior:
 | `escalate` | true | true, false. When false, tests between the thresholds report `unsure`. |
 | `escalateModel` | off (uses `indexModel`) | Any LLM provider; used for tests between the thresholds |
 | `thresholds` | pass 0.9, fail 0.1 | Any p(pass) cutoffs |
-| `ignoreUnchanged` | true | true, false. Runs only tests affected by the git diff. |
+| `ignoreUnchanged` | false | true, false. When true, runs only tests affected by the git diff. |
 | `baseRef` | `origin/main` | Any git ref |
 | `entryMode` | `ask-plain` | `ask-plain`, `ask-entry`, `required` |
 | `maxQuestions` | 5 | Any integer. Max questions generate asks per run; 0 never asks. |
@@ -199,7 +201,7 @@ It then creates `tyxtest/` and `tyxtest.config.json`, adds `.env` to `.gitignore
 2. The CLI shows the proposed tree. You accept, edit, or drop surfaces before anything is written.
 3. tyxtest writes each `surface.md` with `entry:` and test IDs filled in, then runs `tyxtest index` on the result.
 
-`generate` asks questions only when it's stuck: an ambiguous mapping (two components could be "the login form") or a feature whose intended behavior isn't clear from the code. Questions are batched into one prompt after the scan, capped at `maxQuestions` (default 5). Past the cap, it takes its best guess and flags it in the review step. Non-interactive runs follow `nonInteractive`.
+`generate` asks questions only when it's stuck: an ambiguous mapping (two components could be "the login form") or a feature whose intended behavior isn't clear from the code. Questions are batched into one prompt after the scan, capped at `maxQuestions` (default 5). A nonblank answer is sent back to the index model to revise the proposal before acceptance; a blank answer keeps the guesses. There is no additional question loop. Past the cap, it takes its best guess and flags it in the review step. Non-interactive runs follow `nonInteractive`. Normalized surface paths must be unique, and all accepted entries are validated before any surface is written, so a colliding proposal cannot overwrite accepted tests.
 
 ## Scope
 

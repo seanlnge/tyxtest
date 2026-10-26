@@ -11,7 +11,7 @@ import type { Prompter } from "./prompter.js";
 import { createModelClient } from "../model/providers.js";
 import { listSourceFiles, readFileBundle, routerFiles } from "../closure/repo-files.js";
 import { backfillTestIds, writeSurface } from "../surface/surface.js";
-import type { ModelClient, ModelSource, TyxtestConfig } from "../config/types.js";
+import type { ModelClient, ModelRequest, ModelSource, TyxtestConfig } from "../config/types.js";
 
 interface GenerateQuestion {
   prompt: string;
@@ -61,7 +61,7 @@ export async function generateCommand(options: {
   const files = listSourceFiles(options.cwd);
   const routes = routerFiles(files);
   const bundle = readFileBundle(options.cwd, (routes.length > 0 ? routes : files).slice(0, 20), 40_000);
-  const response = await model.complete({
+  const request: ModelRequest = {
     purpose: "generate",
     system: [
       "You propose a product surface tree from what this software does for its users.",
@@ -71,10 +71,11 @@ export async function generateCommand(options: {
       "Every surface needs an entry path that exists in the file list and at least one test.",
     ].join(" "),
     prompt: `${readProjectBrief(options.cwd)}\n\nSource files:\n${files.join("\n") || "(none)"}\n\nSample source:\n${bundle || "(none)"}`,
-  });
+  };
 
-  const proposal = parseProposal(response);
-  const flags = await askStuckQuestions({
+  let proposal = parseProposal(await model.complete(request));
+  let revised = false;
+  const answers = await askStuckQuestions({
     prompter: options.prompter,
     interactive: options.interactive,
     yes: acceptProposal,
@@ -82,14 +83,37 @@ export async function generateCommand(options: {
     maxQuestions: config.maxQuestions,
     questions: proposal.questions,
   });
+  if (answers.answer.trim()) {
+    revised = true;
+    const askable = proposal.questions.slice(0, config.maxQuestions);
+    const overflow = proposal.questions.slice(config.maxQuestions);
+    proposal = parseProposal(await model.complete({
+      ...request,
+      prompt: `${request.prompt}\n\nOriginal proposal:\n${JSON.stringify(proposal.surfaces)}\n\nQuestions asked (answers correspond to these only):\n${JSON.stringify(askable)}\n\nUser's batched answer to those asked questions:\n${answers.answer}\n\nQuestions not asked because of maxQuestions (do not treat them as answered):\n${JSON.stringify(overflow)}\n\nRevise the proposal using this context. Return the same JSON schema, including any remaining ambiguities in questions.`,
+    }));
+  }
+  const flags = revised
+    ? [...answers.flags, ...proposal.questions.map((question) => guessFlag(question, "unresolved"))]
+    : answers.flags;
   if (flags.length > 0) options.prompter.log(flags.join("\n"));
   const accepted = await confirmTree(options.prompter, flatten(proposal.surfaces), acceptProposal);
   if (accepted.length === 0) throw new Error("No surfaces left to write.");
+  const destinations = new Set<string>();
   for (const surface of accepted) {
+    const normalizedDir = surface.relativeDir.toLowerCase();
+    if (destinations.has(normalizedDir)) {
+      throw new Error(`Proposed surfaces collide at normalized path "${surface.relativeDir}". Rename or remove the conflicting surfaces before accepting.`);
+    }
+    destinations.add(normalizedDir);
     if (!surface.entry) throw new Error(`Proposed surface "${surface.relativeDir}" has no entry file.`);
     if (!fs.existsSync(path.join(options.cwd, surface.entry))) {
       throw new Error(`Entry file not found: ${surface.entry}`);
     }
+    if (!fs.statSync(path.join(options.cwd, surface.entry)).isFile()) {
+      throw new Error(`Entry must be a file: ${surface.entry}`);
+    }
+  }
+  for (const surface of accepted) {
     const filled = backfillTestIds(renderSurface(surface));
     writeSurface(path.join(options.cwd, "tyxtest", surface.relativeDir, "surface.md"), filled.markdown);
   }
@@ -175,8 +199,8 @@ async function askStuckQuestions(options: {
   nonInteractive: TyxtestConfig["nonInteractive"];
   maxQuestions: number;
   questions: GenerateQuestion[];
-}): Promise<string[]> {
-  if (options.questions.length === 0) return [];
+}): Promise<{ flags: string[]; answer: string }> {
+  if (options.questions.length === 0) return { flags: [], answer: "" };
   const cap = options.maxQuestions;
   const askable = options.questions.slice(0, cap);
   const overflow = options.questions.slice(cap);
@@ -186,13 +210,13 @@ async function askStuckQuestions(options: {
     const body = askable
       .map((question, index) => `${index + 1}. ${question.prompt}${question.guess ? ` [${question.guess}]` : ""}`)
       .join("\n");
-    await options.prompter.ask(`Answer these in one reply, or press enter to keep the guesses:\n${body}\n`);
-    return flags;
+    const answer = await options.prompter.ask(`Answer these in one reply, or press enter to keep the guesses:\n${body}\n`);
+    return { flags, answer };
   }
   if (!options.interactive && !options.yes && options.nonInteractive === "fail" && askable.length > 0) {
     throw new Error("generate has questions and nonInteractive is fail. Re-run locally or set nonInteractive to search.");
   }
-  return [...askable.map((question) => guessFlag(question, "guess")), ...flags];
+  return { flags: [...askable.map((question) => guessFlag(question, "guess")), ...flags], answer: "" };
 }
 
 function guessFlag(question: GenerateQuestion, label: string): string {

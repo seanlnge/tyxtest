@@ -96,9 +96,10 @@ test("import graph drift uses the fresh closure and warns index stale before the
   assert.ok(warnAt >= 0);
   assert.ok(decideAt > warnAt);
   assert.ok(events.includes("saw-fresh-login"));
-  assert.equal(events.includes("saw-helper-file"), false);
+  assert.equal(events.includes("saw-helper-file"), true);
   assert.equal(outcome.results[0]?.verdict, "pass");
   assert.equal(runner.completes, 0);
+  assert.ok(runner.decides.some((request) => request.purpose === "verdict"));
   assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
 });
 
@@ -241,8 +242,61 @@ test("relocateCheck false does not call the index model", async () => {
     env: {},
   });
   assert.equal(indexCalls, 0);
-  assert.equal(runner.decides.length, 0);
-  assert.match(outcome.results[0]?.explanation ?? "", /not in the closure/);
+  assert.ok(runner.decides.some((request) => request.purpose === "verdict"));
+  assert.ok(runner.decides.every((request) => !request.state.includes("function SubmitButton")));
+  assert.match(outcome.results[0]?.explanation ?? "", /p\(pass\)=0.05/);
+  assert.deepEqual(outcome.results[0]?.evidence.map((item) => item.symbol), ["header"]);
   assert.equal(outcome.results[0]?.verdict, "fail");
   assert.equal(outcome.exitCode, 1);
+});
+
+test("indexed evidence outside the live import closure is never sent as judgment context", async () => {
+  const cwd = tempDir("tyxtest-disconnected-import-");
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src/helper.ts"), 'export function SubmitButton() { return "OUTSIDE_LIVE_CLOSURE"; }\n');
+  writeSurface(cwd, "src/login.ts", 'import { SubmitButton } from "./helper.js";\nexport function Login() { return SubmitButton(); }\n', ["Login"]);
+  const closure = computeSurfaceClosure({ cwd, entry: "src/login.ts", depth: null, parentClosure: null });
+  writeIndex(path.join(cwd, "tyxtest/login/.index.json"), {
+    closure: closure.files, closureHash: closure.closureHash, entry: ["src/login.ts"],
+    files: closure.files.map((file) => ({ ...file, symbols: [] })), notes: [],
+    tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "Login" }, { path: "src/helper.ts", symbol: "SubmitButton" }] }],
+  });
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), 'export function Login() { return "disconnected"; }\n');
+  const runner = decisionRunner(0.05);
+  const outcome = await runCommand({ cwd, model: runner, config: config({ relocateCheck: false }), env: {}, stdout: () => {}, stderr: () => {} });
+  assert.equal(outcome.results[0]?.verdict, "fail");
+  assert.ok(runner.decides.length > 0);
+  assert.ok(runner.decides.every((request) => !request.state.includes("OUTSIDE_LIVE_CLOSURE")));
+  assert.deepEqual(outcome.results[0]?.evidence.map((item) => item.file), ["src/login.ts"]);
+});
+
+test("renamed implementation in a newly imported module is judged with fresh fallback evidence", async () => {
+  const cwd = tempDir("tyxtest-live-evidence-move-");
+  writeSurface(cwd, "src/login.ts", 'export function SubmitButton() { return "submit"; }\n', ["SubmitButton"]);
+  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json"));
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), 'import { CheckoutButton } from "./checkout.js";\nexport function Login() { return CheckoutButton(); }\n');
+  fs.writeFileSync(path.join(cwd, "src/checkout.ts"), 'export function CheckoutButton() { return "LIVE_RENAMED_SUBMIT"; }\n');
+  let verdictState = "";
+  let indexCalls = 0;
+  const outcome = await runCommand({
+    cwd, config: config(), env: {}, stdout: () => {}, stderr: () => {},
+    model: {
+      async decide(request) {
+        assert.doesNotMatch(request.state, /function SubmitButton/);
+        if (request.purpose === "verdict") {
+          verdictState = request.state;
+          const passes = request.state.includes("LIVE_RENAMED_SUBMIT") && request.state.includes("return CheckoutButton()");
+          return { probabilities: passes ? [0.99, 0.01] : [0.01, 0.99] };
+        }
+        return { probabilities: request.state.includes("LIVE_RENAMED_SUBMIT") ? [0.99, 0.01] : [0.01, 0.99] };
+      },
+      async complete() { throw new Error("runner should not call an LLM"); },
+    },
+    indexModel: { async complete() { indexCalls += 1; throw new Error("a live pass must not relocate"); } },
+  });
+  assert.equal(outcome.results[0]?.verdict, "pass");
+  assert.match(verdictState, /LIVE_RENAMED_SUBMIT/);
+  assert.deepEqual(outcome.results[0]?.evidence.map((item) => [item.file, item.symbol]), [["src/checkout.ts", "CheckoutButton"]]);
+  assert.equal(indexCalls, 0);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
 });

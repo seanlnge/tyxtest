@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { withRateLimitBackoff } from "../model/backoff.js";
-import { cacheKey, loadCache, saveCache, type CacheHit } from "../verdict/cache.js";
+import { cacheKey, judgmentContextFingerprint, loadCache, saveCache, type CacheHit } from "../verdict/cache.js";
 import { chunkClosure, evidenceForChunks, selectChunks, type CodeChunk } from "../closure/chunk.js";
 import { loadConfig, requireModels } from "../config/config.js";
 import { collectClosure, computeSurfaceClosure, hashClosure, type ClosureFile } from "../closure/closure.js";
@@ -16,6 +16,7 @@ import { asRecord, asStringArray, parseModelJson } from "../model/model-json.js"
 import { recordSuggestion } from "../surface/pending.js";
 import { mapPool } from "../util/pool.js";
 import { normalizeRel } from "../util/paths.js";
+import { hashContent } from "../util/hash.js";
 import { createModelClient } from "../model/providers.js";
 import { createRunProgress, type ProgressSink } from "../verdict/progress.js";
 import { formatReport, writeReports, type ReportedTest } from "../verdict/reporter.js";
@@ -82,9 +83,9 @@ export async function runCommand(options: {
     test: { id: string; text: string },
     closureHash: string,
     chunkIds: string[],
-    forceUnsure: boolean,
+    judgmentContext: string,
   ): boolean => {
-    if (options.all || forceUnsure) return false;
+    if (options.all) return false;
     const key = cacheKey({
       testId: test.id,
       testText: test.text,
@@ -92,6 +93,7 @@ export async function runCommand(options: {
       lockfileHash,
       optionOrder: VERDICT_OPTIONS,
       chunkIds,
+      judgmentContext,
     });
     const hit = cache.entries[key];
     return Boolean(hit && hit.testId === test.id && isJudged(hit.verdict));
@@ -148,7 +150,7 @@ export async function runCommand(options: {
             surface: surface.relativeDir,
             id: test.id,
             text: test.text,
-            cacheHit: cacheHitFor(test, searched.closureHash, [], true),
+            cacheHit: false,
             run: () =>
             judgeTest({
               cwd: options.cwd,
@@ -157,8 +159,8 @@ export async function runCommand(options: {
               stderr,
               surface,
               test,
+              judgmentContext: judgmentContextFingerprint(config, surface, []),
               closure: searched,
-              hashSource: searched.files,
               symbols: [],
               flows: [],
               chunkRefs: null,
@@ -214,6 +216,13 @@ export async function runCommand(options: {
         )
       : "";
     for (const test of tests) {
+      const chunkIds = chunkIdsFor(index, test.id);
+      const judgmentContext = judgmentContextFingerprint(
+        config,
+        surface,
+        (index.flows ?? []).filter((flow) => flow.testId === test.id),
+        chunkIds,
+      );
       const testClosure = closureForTest({
         cwd: options.cwd,
         surface,
@@ -246,7 +255,7 @@ export async function runCommand(options: {
         surface: surface.relativeDir,
         id: test.id,
         text: test.text,
-        cacheHit: cacheHitFor(test, testClosure.closureHash, chunkIdsFor(index, test.id), false),
+        cacheHit: cacheHitFor(test, testClosure.closureHash, chunkIds, judgmentContext),
         run: () =>
         judgeTest({
           cwd: options.cwd,
@@ -255,12 +264,12 @@ export async function runCommand(options: {
           stderr,
           surface,
           test,
+          judgmentContext,
           closure: testClosure,
-          hashSource: index.closure,
           symbols: chunkSymbols(index, test.id),
           flows: index.flows ?? [],
           chunkRefs: chunkRefsFor(index, test.id),
-          chunkIds: chunkIdsFor(index, test.id),
+          chunkIds,
           runner: runnerClient(),
           escalate: escalateClient(),
           fallback: escalateClient(),
@@ -313,10 +322,10 @@ async function judgeTest(options: {
   config: TyxtestConfig;
   surface: Surface;
   test: { id: string; text: string };
+  judgmentContext: string;
   env: NodeJS.ProcessEnv;
   stderr: (message: string) => void;
   closure: { files: ClosureFile[]; closureHash: string };
-  hashSource: Array<{ path: string; hash: string }>;
   symbols: string[];
   flows: FlowRecord[];
   /** Null when the surface has no index and the fresh closure is the code under test. */
@@ -341,6 +350,7 @@ async function judgeTest(options: {
     lockfileHash: options.lockfileHash,
     optionOrder: VERDICT_OPTIONS,
     chunkIds: options.chunkIds,
+    judgmentContext: options.judgmentContext,
   });
   const hit = options.cache.entries[key];
   if (!options.ignoreCache && !options.forceUnsure && hit && hit.testId === options.test.id && isJudged(hit.verdict)) {
@@ -358,7 +368,10 @@ async function judgeTest(options: {
 
   const kind = options.config.runnerModel?.kind ?? "decision";
   if (!options.ignoreCache && !options.forceUnsure && options.config.triage && kind === "decision" && options.runner.decide) {
-    const previous = Object.values(options.cache.entries).find((entry) => entry.testId === options.test.id && isJudged(entry.verdict));
+    const previous = Object.values(options.cache.entries).find((entry) =>
+      entry.testId === options.test.id && entry.testText === options.test.text &&
+      entry.judgmentContext === options.judgmentContext && isJudged(entry.verdict),
+    );
     if (previous && hit === undefined) {
       const triage = await options.runner.decide({
         purpose: "triage",
@@ -387,12 +400,12 @@ async function judgeTest(options: {
   const flowJudge = Boolean(flow && flow.steps.length > 0 && kind === "decision");
   const codeChunks = flowJudge ? [] : chunksFor(options);
   let judged: ReportedTest & { indexStale?: boolean; fallback?: string };
-  if (!flowJudge && options.chunkRefs !== null && codeChunks.length === 0) {
-    judged = await judgeMissingChunks(options);
+  if (!flowJudge && options.chunkRefs !== null && options.chunkRefs.length === 0) {
+    judged = resultOf(options, "unsure", [], ["unsure"], "no chunks indexed for this test. Run `tyxtest index`.");
   } else if (flowJudge && flow) {
     judged = await judgeFlow(options, flow);
   } else if (kind === "llm") {
-    judged = await judgeWithLlm({ ...options, chunks: codeChunks }, options.runner);
+    judged = await judgeWithLlm(options, options.runner);
   } else {
     judged = await judgeWithDecision({ ...options, chunks: codeChunks });
   }
@@ -418,6 +431,8 @@ async function judgeTest(options: {
   if (!options.forceUnsure && isJudged(verdict)) {
     options.cache.entries[key] = {
       testId: options.test.id,
+      testText: options.test.text,
+      judgmentContext: options.judgmentContext,
       verdict,
       evidence: judged.evidence,
       explanation,
@@ -435,30 +450,6 @@ async function judgeTest(options: {
     explanation,
     ...(judged.fallback ? { fallback: judged.fallback } : {}),
   };
-}
-
-async function judgeMissingChunks(options: {
-  cwd: string;
-  config: TyxtestConfig;
-  env: NodeJS.ProcessEnv;
-  stderr: (message: string) => void;
-  surface: Surface;
-  test: { id: string; text: string };
-  closure: { files: ClosureFile[]; closureHash: string };
-  symbols: string[];
-  chunkRefs: IndexedChunk[] | null;
-  indexModel: () => ModelClient;
-  forceUnsure: boolean;
-}): Promise<ReportedTest> {
-  if (options.chunkRefs && options.chunkRefs.length > 0 && options.config.relocateCheck && !options.forceUnsure) {
-    const relocated = await relocateIfEvidenceGone(options, "indexed chunks for this test are not in the closure.");
-    const verdict = relocated.verdict === "fail" ? "fail" : "unsure";
-    return resultOf(options, verdict, [], [verdict], relocated.explanation);
-  }
-  if (options.chunkRefs && options.chunkRefs.length > 0) {
-    return resultOf(options, "fail", [], ["fail"], "indexed chunks for this test are not in the closure.");
-  }
-  return resultOf(options, "unsure", [], ["unsure"], "no chunks indexed for this test. Run `tyxtest index`.");
 }
 
 async function relocateIfEvidenceGone(
@@ -544,7 +535,6 @@ async function judgeWithDecision(options: {
   surface: Surface;
   test: { id: string; text: string };
   closure: { files: ClosureFile[]; closureHash: string };
-  hashSource: Array<{ path: string; hash: string }>;
   runner: ModelClient;
   escalate: ModelClient;
   fallback: ModelClient;
@@ -552,10 +542,12 @@ async function judgeWithDecision(options: {
   chunks: CodeChunk[];
 }): Promise<ReportedTest & { indexStale?: boolean; fallback?: string }> {
   const chunks = options.chunks;
+  // Indexed chunks locate evidence, but callers and new dependencies can change the claim.
+  const contents = readClosureContents(options.cwd, options.closure.files);
   const requests: DecisionRequest[] = [
     {
       purpose: "verdict",
-      state: renderClaim(options.surface, options.test, chunks),
+      state: renderClaim(options.surface, options.test, contents),
       options: [...VERDICT_OPTIONS],
     },
   ];
@@ -637,16 +629,12 @@ async function judgeWithLlm(
     surface: Surface;
     test: { id: string; text: string };
     closure: { files: ClosureFile[]; closureHash: string };
-    hashSource: Array<{ path: string; hash: string }>;
-    chunks?: CodeChunk[];
   },
   model: ModelClient,
 ): Promise<ReportedTest & { indexStale?: boolean }> {
   const contents = readClosureContents(options.cwd, options.closure.files);
-  const bundle =
-    options.chunks !== undefined
-      ? options.chunks.map((chunk) => `===== ${chunk.path}:${chunk.line} ${chunk.name} =====\n${chunk.text}`).join("\n\n")
-      : options.closure.files.map((file) => `===== ${file.path} =====\n${contents[file.path] ?? ""}`).join("\n");
+  const bundle = options.closure.files.map((file) => `===== ${file.path} =====\n${contents[file.path] ?? ""}`).join("\n");
+  const snapshot = Object.entries(contents).map(([file, content]) => ({ path: file, hash: hashContent(content) }));
   const response = await withRateLimitBackoff(() =>
     model.complete({
       purpose: "run",
@@ -668,7 +656,7 @@ async function judgeWithLlm(
     }),
   );
   const judged = parseJudge(response);
-  const adjusted = applyEvidenceCheck(judged.verdict, judged.evidence, options.hashSource, contents);
+  const adjusted = applyEvidenceCheck(judged.verdict, judged.evidence, snapshot, contents);
   return {
     ...resultOf(options, adjusted, judged.evidence, [adjusted], judged.explanation),
     indexStale: judged.indexStale,
@@ -707,8 +695,8 @@ function skipped(surface: Surface, test: { id: string; text: string }): Reported
   };
 }
 
-function renderClaim(surface: Surface, test: { id: string; text: string }, chunks: CodeChunk[]): string {
-  const body = chunks.map((chunk) => `===== ${chunk.path}:${chunk.line} ${chunk.name} =====\n${chunk.text}`).join("\n\n");
+function renderClaim(surface: Surface, test: { id: string; text: string }, contents: Record<string, string>): string {
+  const body = Object.entries(contents).map(([file, content]) => `===== ${file} =====\n${content}`).join("\n\n");
   return [`Surface: ${surface.name}`, surface.description, `Test [${test.id}] ${test.text}`, body || "(no code)"]
     .filter(Boolean)
     .join("\n\n");
@@ -853,7 +841,6 @@ async function judgeFlow(
     surface: Surface;
     test: { id: string; text: string };
     closure: { files: ClosureFile[]; closureHash: string };
-    hashSource: Array<{ path: string; hash: string }>;
     runner: ModelClient;
     escalate: ModelClient;
     fallback: ModelClient;
@@ -884,9 +871,6 @@ async function judgeFlow(
     missing: boolean;
   }> = [];
   for (const step of flow.steps) {
-    const refs = locateChunks(options.cwd, options.config.baseRef, step.chunks ?? []);
-    const files = [...new Map(refs.map((ref) => [ref.path, { path: ref.path }])).values()];
-    const chunks = selectChunks(chunkClosure(options.cwd, files, options.config.chunkMaxTokens), refs);
     const stepClosure = fs.existsSync(path.join(options.cwd, step.entry))
       ? computeSurfaceClosure({
           cwd: options.cwd,
@@ -895,14 +879,18 @@ async function judgeFlow(
           parentClosure: null,
         })
       : { files: [], closureHash: "" };
+    const freshChunks = chunkClosure(options.cwd, stepClosure.files, options.config.chunkMaxTokens);
+    const refs = locateChunks(options.cwd, options.config.baseRef, step.chunks ?? []);
+    const chunks = selectChunks(freshChunks, refs);
     if (chunks.length === 0) {
       plans.push({ step, closure: stepClosure, chunks, verdictIndex: -1, missing: true });
       continue;
     }
     const verdictIndex = requests.length;
+    const contents = readClosureContents(options.cwd, stepClosure.files);
     requests.push({
       purpose: "verdict",
-      state: [`Step [${step.id}] ${step.text}`, renderClaim(options.surface, { id: step.id, text: step.text }, chunks)].join(
+      state: [`Step [${step.id}] ${step.text}`, renderClaim(options.surface, { id: step.id, text: step.text }, contents)].join(
         "\n\n",
       ),
       options: [...VERDICT_OPTIONS],
@@ -924,10 +912,7 @@ async function judgeFlow(
     answers = await askAll(options.runner, requests);
   } catch (error) {
     if (!options.config.fallback) throw error;
-    const llm = await judgeWithLlm(
-      { ...options, chunks: plans.flatMap((plan) => plan.chunks) },
-      options.fallback,
-    );
+    const llm = await judgeWithLlm(options, options.fallback);
     return { ...llm, fallback: options.fallbackLabel };
   }
   for (const plan of plans) {
@@ -945,7 +930,7 @@ async function judgeFlow(
         continue;
       }
       const escalated = await judgeWithLlm(
-        { ...options, test: { id: plan.step.id, text: plan.step.text }, closure: plan.closure, chunks: plan.chunks },
+        { ...options, test: { id: plan.step.id, text: plan.step.text }, closure: plan.closure },
         options.escalate,
       );
       stepVerdicts.push(escalated.verdict === "skipped" ? "unsure" : escalated.verdict);
@@ -1039,8 +1024,10 @@ function chunksFor(options: {
     return chunkClosure(options.cwd, options.closure.files, options.config.chunkMaxTokens);
   }
   const refs = locateChunks(options.cwd, options.config.baseRef, options.chunkRefs);
-  const files = [...new Map(refs.map((ref) => [ref.path, { path: ref.path }])).values()];
-  return selectChunks(chunkClosure(options.cwd, files, options.config.chunkMaxTokens), refs);
+  const chunks = chunkClosure(options.cwd, options.closure.files, options.config.chunkMaxTokens);
+  const selected = selectChunks(chunks, refs);
+  // A mapped feature can be renamed or move within the live closure without reindexing.
+  return selected.length > 0 || refs.length === 0 ? selected : chunks;
 }
 
 function isJudged(value: unknown): value is "pass" | "fail" | "unsure" {

@@ -73,17 +73,37 @@ export function chunkSource(
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKind(filePath));
   const bindings = collectBindings(source, filePath, files);
   const chunks: CodeChunk[] = [];
+  let needsFileContext = false;
   for (const statement of source.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        const name = declaration.name.getText(source);
+        // Keep the complete declaration list, including its evaluation order.
+        const parts = emitChunk(source, filePath, statement, name, name, maxTokens, bindings);
+        if (statement.declarationList.declarations.length > 1) {
+          for (const part of parts) {
+            part.line = source.getLineAndCharacterOfPosition(declaration.getStart(source)).line + 1;
+            part.endLine = source.getLineAndCharacterOfPosition(declaration.getEnd()).line + 1;
+          }
+        }
+        chunks.push(...parts);
+      }
+      continue;
+    }
     const named = statementName(statement);
     if (named) chunks.push(...emitChunk(source, filePath, statement, named, named, maxTokens, bindings));
-    if (ts.isVariableStatement(statement) && !named) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (!ts.isIdentifier(declaration.name) || !declaration.initializer || isFunctionInit(declaration.initializer)) continue;
-        chunks.push(toChunk(source, filePath, declaration, declaration.name.text, declaration.name.text, bindings));
-      }
+    else if (
+      !ts.isImportDeclaration(statement) &&
+      !ts.isImportEqualsDeclaration(statement) &&
+      !ts.isExportDeclaration(statement) &&
+      !ts.isInterfaceDeclaration(statement) &&
+      !ts.isTypeAliasDeclaration(statement)
+    ) {
+      needsFileContext = true;
     }
   }
-  if (chunks.length === 0) {
+  // Module-level effects can depend on declarations and on one another's order.
+  if (needsFileContext || chunks.length === 0) {
     const lines = text.length === 0 ? 1 : text.split(/\r?\n/).length;
     chunks.push({
       path: filePath,
@@ -109,23 +129,27 @@ function emitChunk(
 ): CodeChunk[] {
   const chunk = toChunk(source, filePath, node, name, symbol, bindings);
   if (estimateTokens(chunk.text) <= maxTokens) return [chunk];
-  let inner = innerNodes(node);
-  if (inner.length <= 1 && inner[0]) {
-    const deeper = innerNodes(inner[0]);
-    if (deeper.length > 1) inner = deeper;
-  }
+  if (ts.isVariableStatement(node) && node.declarationList.declarations.length > 1) return [chunk];
+  const inner = innerNodes(node);
   if (inner.length <= 1) return [chunk];
-  const parts: CodeChunk[] = [];
-  inner.forEach((child, index) => {
+  // These are focus slices, not independently executable fragments. Removing
+  // siblings or wrappers can change guards, early returns, bindings, or class
+  // initialization. Retain the full context even when it exceeds the size cap.
+  return inner.map((child, index) => {
     const childName = statementName(child) ?? `${name}#${index + 1}`;
-    parts.push(...emitChunk(source, filePath, child, childName, symbol, maxTokens, bindings));
+    return { ...toChunk(source, filePath, child, childName, symbol, bindings), kind: chunk.kind, text: chunk.text };
   });
-  return parts.length > 0 ? parts : [chunk];
 }
 
 function statementName(node: import("typescript").Node): string | undefined {
   if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isMethodDeclaration(node)) && node.name && ts.isIdentifier(node.name)) {
     return node.name.text;
+  }
+  if (
+    (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
+    ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
+  ) {
+    return "default";
   }
   if (ts.isVariableStatement(node)) {
     for (const declaration of node.declarationList.declarations) {
@@ -159,11 +183,6 @@ function innerNodes(node: import("typescript").Node): import("typescript").Node[
     return names;
   }
   if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return [...node.members];
-  if (ts.isBlock(node)) return [...node.statements];
-  if (ts.isIfStatement(node)) return [node.thenStatement, node.elseStatement].filter((item): item is import("typescript").Statement => Boolean(item));
-  if (ts.isForStatement(node) || ts.isWhileStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node)) {
-    return [node.statement];
-  }
   if (ts.isExportAssignment(node)) return innerNodes(node.expression);
   return [];
 }
@@ -193,6 +212,10 @@ function toChunk(
 }
 
 function chunkKind(name: string, node: import("typescript").Node): CodeChunk["kind"] {
+  if (ts.isVariableStatement(node)) {
+    const declaration = node.declarationList.declarations.find((item) => item.name.getText() === name);
+    if (declaration) return chunkKind(name, declaration);
+  }
   if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return "class";
   if (ts.isVariableDeclaration(node) && (!node.initializer || !isFunctionInit(node.initializer))) return "constant";
   if (isComponent(name, node)) return "component";

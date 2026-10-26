@@ -71,7 +71,7 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   assert.equal(config.runnerModel.apiKeyEnv, "TYXTEST_RUN_KEY");
   assert.equal(config.escalateModel, null);
   assert.equal(config.fallback, true);
-  assert.equal(config.ignoreUnchanged, true);
+  assert.equal(config.ignoreUnchanged, false);
   assert.equal(config.relocateCheck, true);
   assert.equal(config.maxQuestions, 5);
   assert.equal(config.chunkMaxTokens, 4000);
