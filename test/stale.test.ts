@@ -37,6 +37,7 @@ function writeSurface(cwd: string, entry: string, source: string, symbols: strin
     entry: [entry],
     files: closure.files.map((file) => ({ ...file, symbols })),
     notes: [],
+    tests: [{ testId: "submit-exists", chunks: symbols.map((symbol) => ({ path: entry, symbol })) }],
   });
 }
 
@@ -71,7 +72,8 @@ test("import graph drift uses the fresh closure and warns index stale before the
   const wrapped: ModelClient = {
     async decide(request) {
       events.push(`decide:${request.purpose}`);
-      if (request.purpose === "verdict" && request.state.includes("TOKEN_MOVED_HELPER")) events.push("saw-helper");
+      if (request.purpose === "verdict" && request.state.includes("return helper()")) events.push("saw-fresh-login");
+      if (request.purpose === "verdict" && request.state.includes("TOKEN_MOVED_HELPER")) events.push("saw-helper-file");
       return runner.decide!(request);
     },
     async complete(request) {
@@ -93,7 +95,8 @@ test("import graph drift uses the fresh closure and warns index stale before the
   const decideAt = events.findIndex((event) => event.startsWith("decide:"));
   assert.ok(warnAt >= 0);
   assert.ok(decideAt > warnAt);
-  assert.ok(events.includes("saw-helper"));
+  assert.ok(events.includes("saw-fresh-login"));
+  assert.equal(events.includes("saw-helper-file"), false);
   assert.equal(outcome.results[0]?.verdict, "pass");
   assert.equal(runner.completes, 0);
   assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
@@ -238,7 +241,8 @@ test("relocateCheck false does not call the index model", async () => {
     env: {},
   });
   assert.equal(indexCalls, 0);
-  assert.ok(runner.decides.some((request) => request.purpose === "verdict"));
+  assert.equal(runner.decides.length, 0);
+  assert.match(outcome.results[0]?.explanation ?? "", /not in the closure/);
   assert.equal(outcome.results[0]?.verdict, "fail");
   assert.equal(outcome.exitCode, 1);
 });

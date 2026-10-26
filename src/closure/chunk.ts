@@ -2,8 +2,9 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 
-import { hashContent } from "../util/hash.js";
 import type { Citation } from "../config/types.js";
+import { hashContent } from "../util/hash.js";
+import { normalizeRel } from "../util/paths.js";
 
 const require = createRequire(import.meta.url);
 const ts = require("typescript") as typeof import("typescript");
@@ -13,7 +14,7 @@ export interface CodeChunk {
   name: string;
   /** Outermost function, component, or class this chunk belongs to. */
   symbol: string;
-  kind: "function" | "component" | "class";
+  kind: "function" | "component" | "class" | "constant";
   line: number;
   endLine: number;
   text: string;
@@ -29,13 +30,24 @@ export function evidenceIdentity(filePath: string, symbol: string, text: string)
   return { hash, id: `${path.basename(filePath)}#${symbol}@${hash}` };
 }
 
+/** Keeps chunks whose function, component, class, or constant is one of `refs`. */
+export function selectChunks(chunks: CodeChunk[], refs: Array<{ path: string; symbol: string }>): CodeChunk[] {
+  const wanted = new Set(refs.map((ref) => `${normalizeRel(ref.path)}#${ref.symbol}`));
+  return chunks.filter(
+    (chunk) =>
+      wanted.has(`${normalizeRel(chunk.path)}#${chunk.name}`) || wanted.has(`${normalizeRel(chunk.path)}#${chunk.symbol}`),
+  );
+}
+
 export function chunkClosure(cwd: string, files: Array<{ path: string }>, maxTokens = 4000): CodeChunk[] {
-  const chunks: CodeChunk[] = [];
+  const texts = new Map<string, string>();
   for (const file of files) {
     const absolute = path.join(cwd, file.path);
     if (!fs.existsSync(absolute)) continue;
-    chunks.push(...chunkSource(file.path, fs.readFileSync(absolute, "utf8"), maxTokens));
+    texts.set(normalizeRel(file.path), fs.readFileSync(absolute, "utf8"));
   }
+  const chunks: CodeChunk[] = [];
+  for (const [filePath, text] of texts) chunks.push(...chunkSource(filePath, text, maxTokens, texts));
   return chunks;
 }
 
@@ -52,13 +64,24 @@ export function evidenceForChunks(chunks: CodeChunk[], yesScores: number[]): Cit
     });
 }
 
-export function chunkSource(filePath: string, text: string, maxTokens = 4000): CodeChunk[] {
+export function chunkSource(
+  filePath: string,
+  text: string,
+  maxTokens = 4000,
+  files?: Map<string, string>,
+): CodeChunk[] {
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKind(filePath));
+  const bindings = collectBindings(source, filePath, files);
   const chunks: CodeChunk[] = [];
   for (const statement of source.statements) {
     const named = statementName(statement);
-    if (!named) continue;
-    chunks.push(...emitChunk(source, filePath, statement, named, named, maxTokens));
+    if (named) chunks.push(...emitChunk(source, filePath, statement, named, named, maxTokens, bindings));
+    if (ts.isVariableStatement(statement) && !named) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer || isFunctionInit(declaration.initializer)) continue;
+        chunks.push(toChunk(source, filePath, declaration, declaration.name.text, declaration.name.text, bindings));
+      }
+    }
   }
   if (chunks.length === 0) {
     const lines = text.length === 0 ? 1 : text.split(/\r?\n/).length;
@@ -82,8 +105,9 @@ function emitChunk(
   name: string,
   symbol: string,
   maxTokens: number,
+  bindings: Map<string, string>,
 ): CodeChunk[] {
-  const chunk = toChunk(source, filePath, node, name, symbol);
+  const chunk = toChunk(source, filePath, node, name, symbol, bindings);
   if (estimateTokens(chunk.text) <= maxTokens) return [chunk];
   let inner = innerNodes(node);
   if (inner.length <= 1 && inner[0]) {
@@ -94,7 +118,7 @@ function emitChunk(
   const parts: CodeChunk[] = [];
   inner.forEach((child, index) => {
     const childName = statementName(child) ?? `${name}#${index + 1}`;
-    parts.push(...emitChunk(source, filePath, child, childName, symbol, maxTokens));
+    parts.push(...emitChunk(source, filePath, child, childName, symbol, maxTokens, bindings));
   });
   return parts.length > 0 ? parts : [chunk];
 }
@@ -150,9 +174,13 @@ function toChunk(
   node: import("typescript").Node,
   name: string,
   symbol: string,
+  bindings: Map<string, string>,
 ): CodeChunk {
   const start = source.getLineAndCharacterOfPosition(node.getStart(source, false));
   const end = source.getLineAndCharacterOfPosition(node.getEnd());
+  const own =
+    ts.isVariableDeclaration(node) && bindings.has(name) ? (bindings.get(name) ?? node.getText(source)) : node.getText(source);
+  const constants = constantsFor(node, bindings).filter((declaration) => declaration !== own);
   return {
     path: filePath,
     name,
@@ -160,14 +188,19 @@ function toChunk(
     kind: chunkKind(name, node),
     line: start.line + 1,
     endLine: end.line + 1,
-    text: node.getText(source),
+    text: constants.length > 0 ? `${own}\n\n${constants.join("\n")}` : own,
   };
 }
 
 function chunkKind(name: string, node: import("typescript").Node): CodeChunk["kind"] {
   if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return "class";
+  if (ts.isVariableDeclaration(node) && (!node.initializer || !isFunctionInit(node.initializer))) return "constant";
   if (isComponent(name, node)) return "component";
   return "function";
+}
+
+function isFunctionInit(node: import("typescript").Node): boolean {
+  return ts.isArrowFunction(node) || ts.isFunctionExpression(node);
 }
 
 function isComponent(name: string, node: import("typescript").Node): boolean {
@@ -186,6 +219,185 @@ function hasJsx(node: import("typescript").Node): boolean {
   };
   visit(node);
   return found;
+}
+
+function collectBindings(
+  source: import("typescript").SourceFile,
+  filePath: string,
+  files: Map<string, string> | undefined,
+): Map<string, string> {
+  const bindings = new Map<string, string>();
+  if (files) {
+    for (const [local, declaration] of importedConstants(source, filePath, files)) bindings.set(local, declaration);
+  }
+  for (const record of constantRecords(source)) bindings.set(record.name, record.text);
+  return bindings;
+}
+
+function constantRecords(source: import("typescript").SourceFile): Array<{ name: string; text: string; exported: boolean }> {
+  const records: Array<{ name: string; text: string; exported: boolean }> = [];
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    const exported = ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+    const keyword =
+      (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+        ? "const"
+        : (statement.declarationList.flags & ts.NodeFlags.Let) !== 0
+          ? "let"
+          : "var";
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer || isFunctionInit(declaration.initializer)) continue;
+      const text =
+        statement.declarationList.declarations.length === 1 ? statement.getText(source) : `${keyword} ${declaration.getText(source)}`;
+      records.push({ name: declaration.name.text, text, exported });
+    }
+  }
+  return records;
+}
+
+function importedConstants(
+  source: import("typescript").SourceFile,
+  filePath: string,
+  files: Map<string, string>,
+): Map<string, string> {
+  const imported = new Map<string, string>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith(".")) continue;
+    const resolved = resolveModule(filePath, specifier, files);
+    if (!resolved) continue;
+    const exported = exportedConstants(resolved, files, new Set());
+    const clause = statement.importClause;
+    if (!clause) continue;
+    if (clause.name) {
+      const declaration = exported.get("default");
+      if (declaration) imported.set(clause.name.text, declaration);
+    }
+    if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      for (const spec of clause.namedBindings.elements) {
+        const importedName = (spec.propertyName ?? spec.name).text;
+        const declaration = exported.get(importedName);
+        if (declaration) imported.set(spec.name.text, declaration);
+      }
+    }
+  }
+  return imported;
+}
+
+function exportedConstants(filePath: string, files: Map<string, string>, seen: Set<string>): Map<string, string> {
+  const key = normalizeRel(filePath);
+  if (seen.has(key)) return new Map();
+  seen.add(key);
+  const text = files.get(key);
+  if (text === undefined) return new Map();
+  const source = ts.createSourceFile(key, text, ts.ScriptTarget.Latest, true, scriptKind(key));
+  const exported = new Map<string, string>();
+  for (const record of constantRecords(source)) {
+    if (record.exported) exported.set(record.name, record.text);
+  }
+  for (const statement of source.statements) {
+    if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    if (!statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+    const resolved = resolveModule(key, statement.moduleSpecifier.text, files);
+    if (!resolved) continue;
+    const inner = exportedConstants(resolved, files, seen);
+    for (const spec of statement.exportClause.elements) {
+      const importedName = (spec.propertyName ?? spec.name).text;
+      const declaration = inner.get(importedName);
+      if (declaration) exported.set(spec.name.text, declaration);
+    }
+  }
+  return exported;
+}
+
+function resolveModule(fromFile: string, specifier: string, files: Map<string, string>): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile.replaceAll("\\", "/")), specifier));
+  const stem = base.replace(/\.(tsx?|jsx?|mjs|cjs)$/, "");
+  const candidates = [base, `${stem}.ts`, `${stem}.tsx`, `${stem}.js`, `${stem}.jsx`, `${stem}.mjs`, `${stem}/index.ts`, `${stem}/index.tsx`, `${stem}/index.js`];
+  return candidates.find((candidate) => files.has(normalizeRel(candidate)));
+}
+
+function constantsFor(node: import("typescript").Node, bindings: Map<string, string>): string[] {
+  const declared = declaredNames(node);
+  const needed = new Set<string>();
+  const visit = (current: import("typescript").Node): void => {
+    if (ts.isIdentifier(current) && isValueReference(current) && bindings.has(current.text) && !declared.has(current.text)) {
+      needed.add(current.text);
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  const included = new Set<string>();
+  const texts: string[] = [];
+  const queue = [...needed];
+  while (queue.length > 0) {
+    const name = queue.pop();
+    if (!name || included.has(name)) continue;
+    const declaration = bindings.get(name);
+    if (!declaration) continue;
+    included.add(name);
+    texts.push(declaration);
+    for (const reference of identifierNames(declaration)) {
+      if (reference !== name && bindings.has(reference) && !included.has(reference)) queue.push(reference);
+    }
+  }
+  return texts;
+}
+
+function identifierNames(text: string): string[] {
+  const source = ts.createSourceFile("constant.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const names: string[] = [];
+  const visit = (current: import("typescript").Node): void => {
+    if (ts.isIdentifier(current) && isValueReference(current)) names.push(current.text);
+    ts.forEachChild(current, visit);
+  };
+  visit(source);
+  return names;
+}
+
+function declaredNames(node: import("typescript").Node): Set<string> {
+  const names = new Set<string>();
+  const visit = (current: import("typescript").Node): void => {
+    if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) names.add(current.name.text);
+    if (ts.isParameter(current) && ts.isIdentifier(current.name)) names.add(current.name.text);
+    if (
+      (ts.isFunctionDeclaration(current) || ts.isClassDeclaration(current) || ts.isMethodDeclaration(current)) &&
+      current.name &&
+      ts.isIdentifier(current.name)
+    ) {
+      names.add(current.name.text);
+    }
+    if (ts.isBindingElement(current) && ts.isIdentifier(current.name)) names.add(current.name.text);
+    if (ts.isCatchClause(current) && current.variableDeclaration && ts.isIdentifier(current.variableDeclaration.name)) {
+      names.add(current.variableDeclaration.name.text);
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return names;
+}
+
+function isValueReference(node: import("typescript").Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) return true;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (ts.isPropertyAssignment(parent) && parent.name === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return false;
+  if (
+    (ts.isVariableDeclaration(parent) ||
+      ts.isFunctionDeclaration(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isParameter(parent) ||
+      ts.isMethodDeclaration(parent)) &&
+    parent.name === node
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function scriptKind(filePath: string): import("typescript").ScriptKind {

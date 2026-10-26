@@ -25,6 +25,8 @@ test("cache keys change when any component changes", () => {
   assert.notEqual(key, cacheKey({ ...base, lockfileHash: "other-lock" }));
   assert.notEqual(key, cacheKey({ ...base, optionOrder: ["fail", "pass"] }));
   assert.equal(key, cacheKey({ ...base, optionOrder: ["pass", "fail"] }));
+  assert.equal(key, cacheKey({ ...base, chunkIds: [] }));
+  assert.notEqual(key, cacheKey({ ...base, chunkIds: ["src/login.ts#SubmitButton"] }));
 });
 
 test("lockfile hash changes when the lockfile changes", () => {

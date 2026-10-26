@@ -1,0 +1,236 @@
+{
+  "closure": [
+    {
+      "hash": "77a87b1cfcb6e9520689d974ebf80725d7594b15a46e0c0ce33559104eca0801",
+      "path": "src/closure/chunk.ts"
+    },
+    {
+      "hash": "28a5a2f7ff4a815db135bf23b76a118414db4526d9e7e797e33f13aced21c020",
+      "path": "src/closure/closure.ts"
+    },
+    {
+      "hash": "0e2615bd97f3d41a4a16265900855ccad9b66fe758a56e9581b4f825177f087d",
+      "path": "src/closure/repo-files.ts"
+    },
+    {
+      "hash": "c170d4d944e5aa6d3185fe1d29c370e0efc9dd3f44f0dc515c3a9e5735fbcd93",
+      "path": "src/commands/run.ts"
+    },
+    {
+      "hash": "346d11930013c961a0fa59645cd42699281aa6fce43b72ae647cfd20318ba9d3",
+      "path": "src/config/config.ts"
+    },
+    {
+      "hash": "d74468276dec2e22eb0602e0ccb955a55144a6c3fd1b101c820bb1389cd7f525",
+      "path": "src/config/env.ts"
+    },
+    {
+      "hash": "600fd3b0afcb02ec83bd729c67e13a976066f1dd15dd0c5584fcdbeded95dfeb",
+      "path": "src/config/types.ts"
+    },
+    {
+      "hash": "f56de3036e0dd210192ffa26a785f95ae164e492e8c5d864b00d747f0e349e8b",
+      "path": "src/model/backoff.ts"
+    },
+    {
+      "hash": "309a2ce63b1a270de87eddf5384fa8bf17af16a31aea35946bb074bb6023f60d",
+      "path": "src/model/model-json.ts"
+    },
+    {
+      "hash": "76fe60139e5314ef3d8691ca6e19cdf0b5f7fca26c7700455ae7adb191e48ca6",
+      "path": "src/model/providers.ts"
+    },
+    {
+      "hash": "411e1ab6328add8d589f4fb30b4ffc26e3248ae08005ceb1d6bd7b6885f41ef2",
+      "path": "src/surface/discover.ts"
+    },
+    {
+      "hash": "88e7a2d179ec0310829a0bf7ec7c1942c74679f097afce87dce91a313765c855",
+      "path": "src/surface/index-file.ts"
+    },
+    {
+      "hash": "6df49ed77a777ae9a801a68e0892712a6850321a837fe50ab8c4fd8df19f5580",
+      "path": "src/surface/pending.ts"
+    },
+    {
+      "hash": "934656b24db8509570a8f30c1c89aa16e714a7ee030a2a69e9f38facfae72757",
+      "path": "src/surface/surface.ts"
+    },
+    {
+      "hash": "ba74a933827ca3e3ddd47b6059c816bbde863094391ca73ef0f9f579ca9036cd",
+      "path": "src/util/fs-util.ts"
+    },
+    {
+      "hash": "91df5056a15bd7ca8e14a4e48bbdfa20c4c65373807568ab74f01d38f20042b9",
+      "path": "src/util/hash.ts"
+    },
+    {
+      "hash": "f18554f19f3b0de79db1c3385be16d9dc7df9bd84dc4d51356388e408f9a71b0",
+      "path": "src/util/json.ts"
+    },
+    {
+      "hash": "5d1b56cb4348eeab408321978fcdfc2923ee57dfc095e4924bd7bcab4a522c3c",
+      "path": "src/util/paths.ts"
+    },
+    {
+      "hash": "7f7a5bdcbe08cf09277da6a4a368bbb636e8515fb6b7bd562ea7c828e37cc35f",
+      "path": "src/util/pool.ts"
+    },
+    {
+      "hash": "1bfaad3afb87c891b3823273f7b077e80df724c665921912d7da18df866d2b1a",
+      "path": "src/verdict/cache.ts"
+    },
+    {
+      "hash": "4214f9a801179cda76abaf1131045e0ad5edb35d88d0d183033c6736420ea776",
+      "path": "src/verdict/diff.ts"
+    },
+    {
+      "hash": "c83f0382a0aa4efba2a4b6365327d6d2048651760846803711ff192617eb989d",
+      "path": "src/verdict/evidence.ts"
+    },
+    {
+      "hash": "213d4e5e6df92eca7f13bada49cd3cf103395f4bc3c856f90a132e1d84b8516b",
+      "path": "src/verdict/lockfile.ts"
+    },
+    {
+      "hash": "636938de780af7d8a413461061601ee5897cdf3e27a843d4c88f8f3be1e20f74",
+      "path": "src/verdict/progress.ts"
+    },
+    {
+      "hash": "a31f48358ba0956244567fae05475429b5a2288525c4efb9f5b1d126ef70b082",
+      "path": "src/verdict/reporter.ts"
+    },
+    {
+      "hash": "11e59b3ecd240ad36baa255f6b62bd0e0c8aac6bea91ffdfd23ae8e6895b4209",
+      "path": "src/verdict/verdict.ts"
+    }
+  ],
+  "closureHash": "0d4ba22ed870ac693fbe7980d4e9e112798c0a9e4ab93f0e6b9136940fa401d7",
+  "entry": [
+    "src/commands/run.ts"
+  ],
+  "files": [
+    {
+      "hash": "77a87b1cfcb6e9520689d974ebf80725d7594b15a46e0c0ce33559104eca0801",
+      "path": "src/closure/chunk.ts",
+      "symbols": [
+        "chunkClosure"
+      ]
+    },
+    {
+      "hash": "28a5a2f7ff4a815db135bf23b76a118414db4526d9e7e797e33f13aced21c020",
+      "path": "src/closure/closure.ts",
+      "symbols": [
+        "collectClosure",
+        "computeSurfaceClosure"
+      ]
+    },
+    {
+      "hash": "c170d4d944e5aa6d3185fe1d29c370e0efc9dd3f44f0dc515c3a9e5735fbcd93",
+      "path": "src/commands/run.ts",
+      "symbols": [
+        "chunksFor",
+        "judgeTest",
+        "judgeWithDecision",
+        "judgeWithLlm",
+        "runCommand"
+      ]
+    },
+    {
+      "hash": "88e7a2d179ec0310829a0bf7ec7c1942c74679f097afce87dce91a313765c855",
+      "path": "src/surface/index-file.ts",
+      "symbols": [
+        "readIndex"
+      ]
+    },
+    {
+      "hash": "ba74a933827ca3e3ddd47b6059c816bbde863094391ca73ef0f9f579ca9036cd",
+      "path": "src/util/fs-util.ts",
+      "symbols": [
+        "writeText"
+      ]
+    },
+    {
+      "hash": "a31f48358ba0956244567fae05475429b5a2288525c4efb9f5b1d126ef70b082",
+      "path": "src/verdict/reporter.ts",
+      "symbols": [
+        "renderJUnit",
+        "writeReports"
+      ]
+    }
+  ],
+  "notes": [],
+  "tests": [
+    {
+      "chunks": [
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "runCommand"
+        },
+        {
+          "path": "src/surface/index-file.ts",
+          "symbol": "readIndex"
+        }
+      ],
+      "testId": "does-not-rewrite-index"
+    },
+    {
+      "chunks": [
+        {
+          "path": "src/closure/chunk.ts",
+          "symbol": "chunkClosure"
+        },
+        {
+          "path": "src/closure/closure.ts",
+          "symbol": "collectClosure"
+        },
+        {
+          "path": "src/closure/closure.ts",
+          "symbol": "computeSurfaceClosure"
+        },
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "chunksFor"
+        },
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "judgeTest"
+        },
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "judgeWithDecision"
+        },
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "judgeWithLlm"
+        },
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "runCommand"
+        }
+      ],
+      "testId": "static-claim-checks"
+    },
+    {
+      "chunks": [
+        {
+          "path": "src/commands/run.ts",
+          "symbol": "runCommand"
+        },
+        {
+          "path": "src/util/fs-util.ts",
+          "symbol": "writeText"
+        },
+        {
+          "path": "src/verdict/reporter.ts",
+          "symbol": "renderJUnit"
+        },
+        {
+          "path": "src/verdict/reporter.ts",
+          "symbol": "writeReports"
+        }
+      ],
+      "testId": "writes-results"
+    }
+  ]
+}

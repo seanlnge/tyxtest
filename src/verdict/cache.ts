@@ -11,6 +11,8 @@ export interface CacheKeyInput {
   closureHash: string;
   lockfileHash: string;
   optionOrder: readonly string[];
+  /** Indexed chunk identities. Omitted and empty mean the same key. */
+  chunkIds?: readonly string[];
 }
 
 export interface CacheHit {
@@ -24,9 +26,20 @@ export interface VerdictCache {
   entries: Record<string, CacheHit>;
 }
 
+/** Bump when the text sent to the model changes without the source files changing. */
+const CHUNK_RENDER = "constants";
+
 export function cacheKey(input: CacheKeyInput): string {
   return hashContent(
-    [input.testId, input.testText, input.closureHash, input.lockfileHash, input.optionOrder.join("\0")].join("\0"),
+    [
+      input.testId,
+      input.testText,
+      input.closureHash,
+      input.lockfileHash,
+      input.optionOrder.join("\0"),
+      (input.chunkIds ?? []).join("\0"),
+      CHUNK_RENDER,
+    ].join("\0"),
   );
 }
 

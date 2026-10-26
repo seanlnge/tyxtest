@@ -13,9 +13,11 @@ test("config defaults", () => {
   assert.equal(config.reruns, 2);
   assert.equal(config.verdictRule, "worst");
   assert.equal(config.unsureBlocks, false);
+  assert.equal(config.showCached, false);
   assert.equal(config.closureDepth, null);
   assert.equal(config.escalate, true);
   assert.equal(config.escalateModel, undefined);
+  assert.equal(config.fallback, true);
   assert.deepEqual(config.thresholds, { pass: 0.9, fail: 0.1 });
   assert.equal(config.ignoreUnchanged, true);
   assert.equal(config.baseRef, "origin/main");
@@ -88,13 +90,16 @@ test("config rejects invalid enums and non-integers", () => {
   assert.throws(() => parseConfig({ entryMode: "guess" }), /entryMode/);
   assert.throws(() => parseConfig({ reruns: 1.5 }), /reruns/);
   assert.throws(() => parseConfig({ closureDepth: -1 }), /closureDepth/);
-  assert.throws(() => parseConfig({ verdictRule: "majority" }), /verdictRule/);
+  assert.equal(parseConfig({ verdictRule: "majority" }).verdictRule, "majority");
+  assert.equal(parseConfig({ verdictRule: "best" }).verdictRule, "best");
+  assert.throws(() => parseConfig({ verdictRule: "random" }), /verdictRule/);
 });
 
 test("default API key env vars", () => {
   assert.equal(defaultApiKeyEnv("anthropic"), "ANTHROPIC_API_KEY");
   assert.equal(defaultApiKeyEnv("OpenAI"), "OPENAI_API_KEY");
   assert.equal(defaultApiKeyEnv("ollama"), undefined);
+  assert.equal(defaultApiKeyEnv("typesafe"), "TYPESAFE_API_KEY");
 });
 
 test("loadConfig reads a file and rejects a stored key", () => {

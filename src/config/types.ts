@@ -38,14 +38,18 @@ export interface TyxtestConfig {
   runnerModel?: ModelConfig;
   escalate: boolean;
   escalateModel?: ModelConfig;
+  /** When true, a failed decision request is answered by the escalation model. */
+  fallback: boolean;
   thresholds: Thresholds;
   ignoreUnchanged: boolean;
   baseRef: string;
   entryMode: EntryMode;
   nonInteractive: NonInteractive;
   reruns: number;
-  verdictRule: "worst";
+  verdictRule: "worst" | "majority" | "best";
   unsureBlocks: boolean;
+  /** When false, a run hides tests whose verdict was reused from the cache. */
+  showCached: boolean;
   triage: boolean;
   relocateCheck: boolean;
   closureDepth: number | null;
@@ -79,6 +83,8 @@ export interface DecisionAnswer {
 export interface ModelClient {
   complete(request: ModelRequest): Promise<string>;
   decide?(request: DecisionRequest): Promise<DecisionAnswer>;
+  /** One System One request for every question. Falls back to decide() when absent. */
+  decideMany?(requests: DecisionRequest[]): Promise<DecisionAnswer[]>;
 }
 
 export type ModelSource = ModelClient | (() => ModelClient);

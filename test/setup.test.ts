@@ -53,6 +53,7 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
     indexModel: { provider: string; apiKeyEnv: string; kind?: string };
     runnerModel: { kind: string; provider: string; model: string; apiKeyEnv: string };
     escalateModel: unknown;
+    fallback: boolean;
     ignoreUnchanged: boolean;
     relocateCheck: boolean;
     maxQuestions: number;
@@ -69,6 +70,7 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   assert.equal(config.runnerModel.model, "jev");
   assert.equal(config.runnerModel.apiKeyEnv, "TYXTEST_RUN_KEY");
   assert.equal(config.escalateModel, null);
+  assert.equal(config.fallback, true);
   assert.equal(config.ignoreUnchanged, true);
   assert.equal(config.relocateCheck, true);
   assert.equal(config.maxQuestions, 5);
@@ -90,4 +92,19 @@ test("setup writes .gitignore and .gitattributes merge=ours for .index.json", as
   assert.equal(gitignoreAgain.split(/\r?\n/).filter((line) => line.trim() === ".env").length, 1);
   const attributesAgain = fs.readFileSync(path.join(cwd, ".gitattributes"), "utf8");
   assert.equal(attributesAgain.split(/\r?\n/).filter((line) => line.includes("merge=ours")).length, 1);
+});
+
+test("setup prompts for a separate escalation key environment variable", async () => {
+  const cwd = tempDir("tyxtest-setup-escalation-");
+  const prompter = scriptedPrompter([
+    "anthropic", "claude-index", "INDEX_KEY",
+    "decision", "typesafe", "jev", "RUN_KEY",
+    "openai", "gpt-escalate", "ESCALATE_KEY",
+    "ask-plain", "no",
+  ]);
+  await setupCommand({ cwd, prompter, env: { INDEX_KEY: "i", RUN_KEY: "r", ESCALATE_KEY: "e" } });
+  const config = JSON.parse(fs.readFileSync(path.join(cwd, "tyxtest/tyxtest.config.json"), "utf8")) as {
+    escalateModel: { apiKeyEnv: string };
+  };
+  assert.equal(config.escalateModel.apiKeyEnv, "ESCALATE_KEY");
 });

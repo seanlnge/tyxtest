@@ -101,12 +101,20 @@ async function postJson(url: string, body: unknown, headers: Record<string, stri
 }
 
 async function postJsonOnce(url: string, body: unknown, headers: Record<string, string>): Promise<unknown> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  timer.unref();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (response.status === 429) {
     const text = await response.text();
     throw new Error(`Model request failed (429): rate limit ${text.slice(0, 200)}`);
@@ -121,11 +129,7 @@ async function postJsonOnce(url: string, body: unknown, headers: Record<string, 
     }
   }
   if (!response.ok) {
-    const message =
-      payload && typeof payload === "object" && "error" in payload
-        ? JSON.stringify((payload as { error?: unknown }).error).slice(0, 500)
-        : text.slice(0, 500);
-    throw new Error(`Model request failed (${response.status}): ${message}`);
+    throw new Error(`Model request failed (${response.status}): ${errorText(payload, text)}`);
   }
   return payload;
 }
@@ -144,46 +148,137 @@ class DecisionClient implements ModelClient {
   async decide(request: DecisionRequest): Promise<DecisionAnswer> {
     const provider = this.config.provider.toLowerCase();
     const model = this.config.model === "jev" ? "jev-latest" : this.config.model;
-    const criteria: Record<string, string> = {};
-    for (const option of request.options) criteria[option] = option;
-    const instructions =
-      request.purpose === "evidence"
-        ? "Does this chunk implement the claim? Choose only from the given options."
-        : request.purpose === "triage"
-          ? "Could this diff change whether the claim is true? Choose only from the given options."
-          : "Does the code satisfy the claim? Choose only from the given options.";
+    const question = choiceQuestion(request);
     if (provider === "openai") {
       const payload = await postJson(
         "https://api.openai.com/v1/decisions",
         {
           model,
           input: request.state,
-          questions: [{ type: "choice", name: "answer", options: request.options, prompt: instructions }],
+          questions: [{ type: "choice", name: "answer", options: request.options, prompt: question.instructions }],
         },
         { authorization: `Bearer ${this.apiKey}` },
       );
       return { probabilities: readProbabilities(payload, request.options) };
     }
     const laya = provider === "laya" || model.toLowerCase().startsWith("laya");
-    const url = laya
-      ? (this.env.LAYA_BASE_URL || "https://api.laya.ai/v1/systemone").replace(/\/$/, "")
-      : "https://jevtypesafeai.com/api/v1/decide";
+    const url = laya ? layaUrl(this.env) : typesafeUrl(this.env);
     const payload = await postJson(
       url,
       {
         model,
         state: request.state,
-        questions: { answer: { type: "choice", instructions, criteria } },
+        questions: { answer: question },
       },
       { authorization: `Bearer ${this.apiKey}` },
     );
-    return { probabilities: readProbabilities(payload, request.options) };
+    return { probabilities: readChoiceProbabilities(payload, request.options) };
   }
+
+  async decideMany(requests: DecisionRequest[]): Promise<DecisionAnswer[]> {
+    if (requests.length === 0) return [];
+    if (requests.length === 1) return [await this.decide(requests[0]!)];
+    const provider = this.config.provider.toLowerCase();
+    if (provider === "openai") {
+      const answers: DecisionAnswer[] = [];
+      for (const request of requests) answers.push(await this.decide(request));
+      return answers;
+    }
+    const model = this.config.model === "jev" ? "jev-latest" : this.config.model;
+    const state: Record<string, string> = {};
+    const questions: Record<string, ReturnType<typeof choiceQuestion>> = {};
+    requests.forEach((request, index) => {
+      const key = `q${index}`;
+      state[key] = request.state;
+      questions[key] = choiceQuestion(request, key);
+    });
+    const laya = provider === "laya" || model.toLowerCase().startsWith("laya");
+    const url = laya ? layaUrl(this.env) : typesafeUrl(this.env);
+    const payload = await postJson(url, { model, state, questions }, { authorization: `Bearer ${this.apiKey}` });
+    return requests.map((request, index) => ({
+      probabilities: readChoiceProbabilities(payload, request.options, `q${index}`),
+    }));
+  }
+}
+
+const CHOICE_INSTRUCTIONS: Record<DecisionRequest["purpose"], string> = {
+  verdict: "Does the code satisfy the claim?",
+  evidence: "Does this chunk implement the claim?",
+  triage: "Could this diff change whether the claim is true?",
+};
+
+const CHOICE_CRITERIA: Record<DecisionRequest["purpose"], Record<string, string>> = {
+  verdict: {
+    pass: "The code does what the claim says.",
+    fail: "The code leaves the claim unsatisfied.",
+  },
+  evidence: {
+    yes: "This chunk is part of how the claim is implemented.",
+    no: "Nothing in this chunk carries out the claim.",
+  },
+  triage: {
+    changes: "This diff could change whether the claim is true.",
+    unchanged: "This diff leaves the claim as true or false as it was.",
+  },
+};
+
+function choiceQuestion(
+  request: DecisionRequest,
+  stateKey?: string,
+): {
+  type: "choice";
+  instructions: string;
+  criteria: Record<string, string>;
+} {
+  const known = CHOICE_CRITERIA[request.purpose];
+  const criteria: Record<string, string> = {};
+  for (const option of request.options) criteria[option] = known[option] ?? option;
+  const instructions = stateKey
+    ? `${CHOICE_INSTRUCTIONS[request.purpose]} Use only \`${stateKey}\`.`
+    : CHOICE_INSTRUCTIONS[request.purpose];
+  return { type: "choice", instructions, criteria };
+}
+
+function typesafeUrl(env: NodeJS.ProcessEnv): string {
+  const base = (env.TYPESAFE_BASE_URL || "https://api.typesafe.ai").replace(/\/$/, "");
+  return `${base}/v1/systemone`;
+}
+
+function layaUrl(env: NodeJS.ProcessEnv): string {
+  return (env.LAYA_BASE_URL || "https://api.laya.ai/v1/systemone").replace(/\/$/, "");
+}
+
+function errorText(payload: unknown, text: string): string {
+  if (payload && typeof payload === "object") {
+    const record = payload as { error?: unknown; detail?: unknown };
+    if (record.error !== undefined) return JSON.stringify(record.error).slice(0, 500);
+    if (record.detail !== undefined) return JSON.stringify(record.detail).slice(0, 500);
+  }
+  return text.slice(0, 500);
+}
+
+function readChoiceProbabilities(payload: unknown, options: string[], name = "answer"): number[] {
+  const answers =
+    payload && typeof payload === "object" ? (payload as { answers?: unknown }).answers : undefined;
+  const answer =
+    answers && typeof answers === "object" && !Array.isArray(answers)
+      ? (answers as Record<string, unknown>)[name]
+      : undefined;
+  const probabilities =
+    answer && typeof answer === "object" ? (answer as { probabilities?: unknown }).probabilities : undefined;
+  if (!probabilities || typeof probabilities !== "object" || Array.isArray(probabilities)) {
+    throw new Error("Decision response did not include probabilities.");
+  }
+  return probabilitiesFor(probabilities as Record<string, unknown>, options);
 }
 
 function readProbabilities(payload: unknown, options: string[]): number[] {
   const found = findProbabilityMap(payload);
   if (!found) throw new Error("Decision response did not include probabilities.");
+  return probabilitiesFor(found, options);
+}
+
+function probabilitiesFor(found: Record<string, unknown>, options: string[]): number[] {
   return options.map((option) => {
     const value = found[option];
     if (typeof value !== "number") throw new Error(`Decision response missing probability for ${option}.`);

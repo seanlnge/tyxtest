@@ -13,18 +13,29 @@ export function thresholdVerdict(pPass: number, thresholds: Thresholds): "pass" 
 }
 
 /**
- * Default rule ("worst"):
- * - the first run passing is a pass
- * - every run failing is a fail
- * - any fail mixed with another outcome is unsure
- * - a set with no pass-first and no fail is unsure
+ * Combine Jev attempts without relying on their order.
  */
-export function aggregateVerdicts(runs: JudgedVerdict[], rule: "worst" = "worst"): JudgedVerdict {
-  if (rule !== "worst") {
-    throw new Error(`verdictRule must be "worst".`);
-  }
+export function aggregateVerdicts(
+  runs: JudgedVerdict[],
+  rule: "worst" | "majority" | "best" = "worst",
+): JudgedVerdict {
   if (runs.length === 0) return "unsure";
-  if (runs[0] === "pass") return "pass";
+  const hasPass = runs.some((run) => run === "pass");
+  const hasFail = runs.some((run) => run === "fail");
+  if (rule === "best") {
+    if (hasPass) return "pass";
+    return hasFail && runs.every((run) => run === "fail") ? "fail" : "unsure";
+  }
+  if (rule === "majority") {
+    const passes = runs.filter((run) => run === "pass").length;
+    const fails = runs.filter((run) => run === "fail").length;
+    if (passes > runs.length / 2) return "pass";
+    if (fails > runs.length / 2) return "fail";
+    return "unsure";
+  }
+  if (rule !== "worst") throw new Error(`Unsupported verdictRule: ${String(rule)}.`);
+  if (hasPass && hasFail) return "unsure";
+  if (runs.every((run) => run === "pass")) return "pass";
   if (runs.every((run) => run === "fail")) return "fail";
   return "unsure";
 }

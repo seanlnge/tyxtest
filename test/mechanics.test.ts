@@ -55,6 +55,29 @@ test("chunks split above the token cap and a class stays a class", () => {
   assert.ok(split.some((chunk) => chunk.name === "remove"));
 });
 
+test("a function chunk includes the constants it references", () => {
+  const source = `export const PENDING_GITIGNORE = "tyxtest/.pending.json";\nexport const INDEX_MERGE_RULE = "tyxtest/**/.index.json merge=ours";\nexport function ensureEnvGitignore() {\n  return [".env", PENDING_GITIGNORE];\n}\nexport function ensureIndexMergeAttributes() {\n  return INDEX_MERGE_RULE;\n}\n`;
+  const chunks = chunkSource("src/git/git-files.ts", source);
+  const gitignore = chunks.find((chunk) => chunk.name === "ensureEnvGitignore");
+  const merge = chunks.find((chunk) => chunk.name === "ensureIndexMergeAttributes");
+  const constant = chunks.find((chunk) => chunk.name === "PENDING_GITIGNORE");
+  assert.match(gitignore?.text ?? "", /tyxtest\/\.pending\.json/);
+  assert.doesNotMatch(gitignore?.text ?? "", /merge=ours/);
+  assert.match(merge?.text ?? "", /merge=ours/);
+  assert.equal(constant?.kind, "constant");
+  assert.match(constant?.text ?? "", /tyxtest\/\.pending\.json/);
+});
+
+test("a function chunk includes a constant imported from another file", () => {
+  const files = new Map<string, string>([
+    ["src/a.ts", `import { RULE } from "./b.js";\nexport function useRule() {\n  return RULE;\n}\n`],
+    ["src/b.ts", `export const RULE = "merge=ours";\n`],
+  ]);
+  const chunks = chunkSource("src/a.ts", files.get("src/a.ts") ?? "", 4000, files);
+  const useRule = chunks.find((chunk) => chunk.name === "useRule");
+  assert.match(useRule?.text ?? "", /merge=ours/);
+});
+
 test("evidence identity is symbol plus content hash, with file:line only for display", () => {
   const text = "export function handleSubmit() {\n  return true;\n}\n";
   const identity = evidenceIdentity("src/LoginForm.tsx", "handleSubmit", text);
@@ -80,6 +103,8 @@ test("the reporter prints evidence for fail and unsure, and for pass only with -
   assert.match(fail, /src\/login\.ts:4/);
   const unsure = formatReport([reported({ verdict: "unsure", runs: ["unsure"] })], false, false);
   assert.match(unsure, /src\/login\.ts:4/);
+  assert.doesNotMatch(unsure, /unsure warns and does not block CI/);
+  assert.ok(unsure.indexOf("[submit-exists]") < unsure.lastIndexOf("src/login.ts:4"));
 });
 
 test("mapPool never runs more than the concurrency limit", async () => {
@@ -111,6 +136,10 @@ test("a run keeps at most `concurrency` verdict calls in flight", async () => {
     entry: ["src/login.ts"],
     files: closure.files.map((file) => ({ ...file, symbols: ["SubmitButton"] })),
     notes: [],
+    tests: ["a", "b", "c", "d"].map((id) => ({
+      testId: id,
+      chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }],
+    })),
   });
   let inflight = 0;
   let max = 0;
@@ -202,9 +231,24 @@ function flowRecord(cwd: string, steps: FlowRecord["steps"]): FlowRecord {
 }
 
 const FLOW_STEPS: FlowRecord["steps"] = [
-  { id: "cta", text: "landing has a CTA to pricing", entry: "src/landing.ts" },
-  { id: "plan", text: "pricing has a plan button", entry: "src/pricing.ts" },
-  { id: "pay", text: "checkout redirects to Stripe", entry: "src/checkout.ts" },
+  {
+    id: "cta",
+    text: "landing has a CTA to pricing",
+    entry: "src/landing.ts",
+    chunks: [{ path: "src/landing.ts", symbol: "Landing" }],
+  },
+  {
+    id: "plan",
+    text: "pricing has a plan button",
+    entry: "src/pricing.ts",
+    chunks: [{ path: "src/pricing.ts", symbol: "Pricing" }],
+  },
+  {
+    id: "pay",
+    text: "checkout redirects to Stripe",
+    entry: "src/checkout.ts",
+    chunks: [{ path: "src/checkout.ts", symbol: "Checkout" }],
+  },
 ];
 
 test("index stores flow steps and the union of their closures", async () => {
@@ -213,6 +257,7 @@ test("index stores flow steps and the union of their closures", async () => {
     async complete(request: ModelRequest) {
       assert.equal(request.purpose, "index");
       return JSON.stringify({
+        tests: [{ testId: "checkout-path", chunks: [{ path: "src/landing.ts", symbol: "Landing" }] }],
         files: [{ path: "src/landing.ts", symbols: ["Landing"] }],
         notes: [],
         flows: [{ testId: "checkout-path", steps: FLOW_STEPS }],
@@ -224,6 +269,8 @@ test("index stores flow steps and the union of their closures", async () => {
   const flow = index.flows?.find((item) => item.testId === "checkout-path");
   assert.ok(flow);
   assert.equal(flow.steps.length, 3);
+  assert.equal(flow.steps[0]?.chunks[0]?.symbol, "Landing");
+  assert.equal(index.tests?.[0]?.chunks[0]?.symbol, "Landing");
   assert.deepEqual(
     flow.closure.map((file) => file.path),
     ["src/checkout.ts", "src/landing.ts", "src/pricing.ts"],
@@ -345,6 +392,7 @@ function writeLogin(cwd: string, source: string): string {
     entry: ["src/login.ts"],
     files: closure.files.map((file) => ({ ...file, symbols: ["SubmitButton"] })),
     notes: [],
+    tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }] }],
   });
   return indexPath;
 }
@@ -471,6 +519,39 @@ test("index --pending reindexes only the flagged surface and clears it", async (
   assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/billing/.index.json")), billingBefore);
   assert.equal(fs.existsSync(path.join(cwd, "tyxtest/.pending.json")), false);
   assert.ok(logs.includes("indexed login"));
+});
+
+test("index --fix reindexes every surface even when a surface filter is given", async () => {
+  const cwd = tempDir("tyxtest-index-fix-");
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "tyxtest", "login"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "tyxtest", "billing"), { recursive: true });
+  for (const name of ["login", "billing"]) {
+    fs.writeFileSync(path.join(cwd, `src/${name}.ts`), `export function ${name}() { return true; }\n`);
+    fs.writeFileSync(
+      path.join(cwd, `tyxtest/${name}/surface.md`),
+      `---\nsurface: ${name}\nentry: src/${name}.ts\n---\n- [exists] ${name} exists\n`,
+    );
+  }
+  const seen: string[] = [];
+  const model: ModelClient = {
+    async complete(request: ModelRequest) {
+      const name = request.prompt.includes("Surface: login") ? "login" : "billing";
+      seen.push(name);
+      return JSON.stringify({ tests: [{ testId: "exists", chunks: [{ path: `src/${name}.ts`, symbol: name }] }] });
+    },
+  };
+  await indexCommand({
+    cwd,
+    surfaces: ["login"],
+    fix: true,
+    model,
+    interactive: false,
+    config: config(),
+    env: {},
+    prompter: scriptedPrompter([]),
+  });
+  assert.deepEqual(seen.sort(), ["billing", "login"]);
 });
 
 test("generate asks one batched prompt up to maxQuestions and flags the overflow", async () => {

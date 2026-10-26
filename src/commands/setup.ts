@@ -99,7 +99,7 @@ async function askOptionalModel(prompter: Prompter, env: NodeJS.ProcessEnv): Pro
   if (!providerAnswer) return undefined;
   const provider = normalizeProvider(providerAnswer);
   const model = await required(prompter, "Escalation model name:");
-  return finishModel(prompter, env, "escalation", "TYXTEST_INDEX_KEY", provider, model, "llm");
+  return finishModel(prompter, env, "escalation", "TYXTEST_ESCALATE_KEY", provider, model, "llm");
 }
 
 async function finishModel(
@@ -150,6 +150,7 @@ function renderConfig(config: {
       runnerModel: config.runnerModel,
       escalate: true,
       escalateModel: config.escalateModel ?? null,
+      fallback: true,
       thresholds: { pass: 0.9, fail: 0.1 },
       ignoreUnchanged: true,
       baseRef: "origin/main",

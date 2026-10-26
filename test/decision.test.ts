@@ -46,8 +46,17 @@ function scaffold(source = SOURCE): string {
     closure: closure.files,
     closureHash: closure.closureHash,
     entry: ["src/login.ts"],
-    files: closure.files.map((file) => ({ ...file, symbols: ["SubmitButton"] })),
+    files: closure.files.map((file) => ({ ...file, symbols: ["header", "SubmitButton"] })),
     notes: [],
+    tests: [
+      {
+        testId: "submit-exists",
+        chunks: [
+          { path: "src/login.ts", symbol: "header" },
+          { path: "src/login.ts", symbol: "SubmitButton" },
+        ],
+      },
+    ],
   });
   return cwd;
 }
@@ -120,10 +129,8 @@ test("escalate false reports unsure and does not call an LLM", async () => {
   assert.equal(outcome.results[0]?.verdict, "unsure");
   assert.equal(outcome.exitCode, 0);
   assert.equal(runner.completes, 0);
-  assert.deepEqual(
-    runner.decides.map((request) => request.purpose),
-    ["verdict"],
-  );
+  assert.equal(runner.decides[0]?.purpose, "verdict");
+  assert.ok(runner.decides.slice(1).every((request) => request.purpose === "evidence"));
 });
 
 test("runnerModel.kind llm skips the decision model", async () => {
@@ -193,6 +200,12 @@ test("ignoreUnchanged skips tests outside the diff", async () => {
       entry: [`src/${file}`],
       files: closure.files.map((entry) => ({ ...entry, symbols: [] })),
       notes: [],
+      tests: [
+        {
+          testId: `${name}-exists`,
+          chunks: [{ path: `src/${file}`, symbol: name.charAt(0).toUpperCase() + name.slice(1) }],
+        },
+      ],
     });
   };
   writeSurface("login", "login.ts", 'export function Login() {\n  return "login";\n}\n');
@@ -241,4 +254,293 @@ test("ignoreUnchanged skips tests outside the diff", async () => {
   assert.ok(decisions > 0);
   assert.match(report, /skipped \(unchanged\)/);
   assert.match(formatReport(outcome.results, false), /skipped \(unchanged\)/);
+});
+
+test("each test is judged on its own chunks", async () => {
+  const cwd = tempDir("tyxtest-chunks-");
+  fs.mkdirSync(path.join(cwd, "tyxtest", "login"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), SOURCE);
+  fs.writeFileSync(
+    path.join(cwd, "tyxtest/login/surface.md"),
+    "---\nsurface: Login form\nentry: src/login.ts\n---\n- [submit-exists] There is a submit button\n- [header-exists] There is a header\n",
+  );
+  const closure = computeSurfaceClosure({ cwd, entry: "src/login.ts", depth: null, parentClosure: null });
+  writeIndex(path.join(cwd, "tyxtest/login/.index.json"), {
+    closure: closure.files,
+    closureHash: closure.closureHash,
+    entry: ["src/login.ts"],
+    files: closure.files.map((file) => ({ ...file, symbols: ["header", "SubmitButton"] })),
+    notes: [],
+    tests: [
+      { testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }] },
+      { testId: "header-exists", chunks: [{ path: "src/login.ts", symbol: "header" }] },
+    ],
+  });
+  const states = new Map<string, string>();
+  const model: ModelClient = {
+    async decide(request) {
+      if (request.purpose === "verdict") {
+        const id = request.state.includes("[submit-exists]") ? "submit-exists" : "header-exists";
+        states.set(id, request.state);
+      }
+      return { probabilities: [0.95, 0.05] };
+    },
+    async complete() {
+      throw new Error("LLM should not be called");
+    },
+  };
+  const outcome = await runCommand({ cwd, model, config: config(), interactive: true, env: {} });
+  assert.equal(outcome.results.length, 2);
+  const submit = states.get("submit-exists") ?? "";
+  const header = states.get("header-exists") ?? "";
+  assert.match(submit, /function SubmitButton/);
+  assert.doesNotMatch(submit, /function header/);
+  assert.match(header, /function header/);
+  assert.doesNotMatch(header, /function SubmitButton/);
+});
+
+test("a decision API failure falls back to the escalation model and notes it", async () => {
+  const cwd = scaffold();
+  let report = "";
+  let used = "";
+  const outcome = await runCommand({
+    cwd,
+    model: {
+      async decide() {
+        throw new Error("max_tokens_exceeded");
+      },
+      async complete() {
+        throw new Error("runner should not generate");
+      },
+    },
+    indexModel: {
+      async complete() {
+        used = "index";
+        return JSON.stringify({ verdict: "fail", evidence: [], explanation: "fallback judged the claim" });
+      },
+    },
+    config: config(),
+    interactive: true,
+    env: {},
+    stdout: (message) => {
+      report += message;
+    },
+  });
+  assert.equal(used, "index");
+  assert.equal(outcome.results[0]?.verdict, "fail");
+  assert.equal(outcome.results[0]?.fallback, "ollama/index");
+  assert.match(report, /1 test fell back to ollama\/index after the decision API failed/);
+});
+
+function scriptedJev(pPasses: number[]): ModelClient & { calls: number } {
+  const state = { calls: 0 };
+  return {
+    get calls() {
+      return state.calls;
+    },
+    async decideMany(requests) {
+      const pPass = pPasses[state.calls];
+      if (pPass === undefined) throw new Error(`unexpected decision call ${state.calls + 1}`);
+      state.calls += 1;
+      return requests.map((request) =>
+        request.purpose === "verdict" ? { probabilities: [pPass, 1 - pPass] } : { probabilities: [0.2, 0.8] },
+      );
+    },
+    async complete() {
+      throw new Error("LLM should not be called");
+    },
+  };
+}
+
+test("three Jev fails stay fail and call the decision model three times when reruns is 2", async () => {
+  const cwd = scaffold();
+  const runner = scriptedJev([0.05, 0.04, 0.03]);
+  let escalations = 0;
+  const escalate: ModelClient = {
+    async complete() {
+      escalations += 1;
+      throw new Error("escalation model should not be called");
+    },
+  };
+  let report = "";
+  const outcome = await runCommand({
+    cwd,
+    model: runner,
+    indexModel: escalate,
+    config: config({ reruns: 2 }),
+    interactive: true,
+    env: {},
+    stdout: (message) => {
+      report += message;
+    },
+  });
+  assert.equal(runner.calls, 3);
+  assert.equal(escalations, 0);
+  assert.deepEqual(outcome.results[0]?.runs, ["fail", "fail", "fail"]);
+  assert.equal(outcome.results[0]?.verdict, "fail");
+  assert.equal(outcome.exitCode, 1);
+  assert.match(report, /fail {2}\[submit-exists\]/);
+  assert.match(report, /0 pass, 1 fail, 0 unsure/);
+});
+
+test("a Jev fail then pass escalates once and stops before the remaining rerun", async () => {
+  const cwd = scaffold();
+  const runner = scriptedJev([0.05, 0.95, 0.05]);
+  let escalations = 0;
+  const escalate: ModelClient = {
+    async complete() {
+      escalations += 1;
+      return JSON.stringify({
+        verdict: "fail",
+        evidence: [{ file: "src/login.ts", line: 1 }],
+        explanation: "escalated once",
+      });
+    },
+  };
+  let report = "";
+  const outcome = await runCommand({
+    cwd,
+    model: runner,
+    indexModel: escalate,
+    config: config({ escalate: true, reruns: 2 }),
+    interactive: true,
+    env: {},
+    stdout: (message) => {
+      report += message;
+    },
+  });
+  assert.equal(runner.calls, 2);
+  assert.equal(escalations, 1);
+  assert.equal(outcome.results[0]?.verdict, "fail");
+  assert.deepEqual(outcome.results[0]?.runs, ["fail"]);
+  assert.equal(outcome.results[0]?.explanation, "escalated once");
+  assert.equal(outcome.exitCode, 1);
+  assert.match(report, /fail {2}\[submit-exists\]/);
+  assert.match(report, /0 pass, 1 fail, 0 unsure/);
+});
+
+test("a Jev fail then between-threshold retries through the configured attempts", async () => {
+  const cwd = scaffold();
+  const runner = scriptedJev([0.05, 0.5, 0.05]);
+  let escalations = 0;
+  const escalate: ModelClient = {
+    async complete() {
+      escalations += 1;
+      return JSON.stringify({
+        verdict: "unsure",
+        evidence: [],
+        explanation: "mixed with unsure, escalated once",
+      });
+    },
+  };
+  const outcome = await runCommand({
+    cwd,
+    model: runner,
+    indexModel: escalate,
+    config: config({ escalate: true, reruns: 2 }),
+    interactive: true,
+    env: {},
+  });
+  assert.equal(runner.calls, 3);
+  assert.equal(escalations, 1);
+  assert.equal(outcome.results[0]?.verdict, "unsure");
+  assert.deepEqual(outcome.results[0]?.runs, ["unsure"]);
+  assert.equal(outcome.results[0]?.explanation, "mixed with unsure, escalated once");
+});
+
+test("a Jev pass does not rerun or escalate", async () => {
+  const cwd = scaffold();
+  const runner = scriptedJev([0.95, 0.05, 0.05]);
+  let escalations = 0;
+  const escalate: ModelClient = {
+    async complete() {
+      escalations += 1;
+      throw new Error("escalation model should not be called");
+    },
+  };
+  const outcome = await runCommand({
+    cwd,
+    model: runner,
+    indexModel: escalate,
+    config: config({ reruns: 2 }),
+    interactive: true,
+    env: {},
+  });
+  assert.equal(runner.calls, 1);
+  assert.equal(escalations, 0);
+  assert.deepEqual(outcome.results[0]?.runs, ["pass"]);
+  assert.equal(outcome.results[0]?.verdict, "pass");
+  assert.equal(outcome.exitCode, 0);
+});
+
+test("between-threshold verdict retries before escalating once", async () => {
+  const cwd = scaffold();
+  const runner = scriptedJev([0.5, 0.05, 0.05]);
+  let llmCalls = 0;
+  const escalate: ModelClient = {
+    async complete() {
+      llmCalls += 1;
+      return JSON.stringify({
+        verdict: "fail",
+        evidence: [{ file: "src/login.ts", line: 1 }],
+        explanation: "between, judged once",
+      });
+    },
+  };
+  let report = "";
+  const outcome = await runCommand({
+    cwd,
+    model: runner,
+    indexModel: escalate,
+    config: config({ escalate: true, reruns: 2 }),
+    interactive: true,
+    env: {},
+    stdout: (message) => {
+      report += message;
+    },
+  });
+  assert.equal(runner.calls, 3);
+  assert.equal(llmCalls, 1);
+  assert.equal(outcome.results[0]?.verdict, "fail");
+  assert.deepEqual(outcome.results[0]?.runs, ["fail"]);
+  assert.equal(outcome.exitCode, 1);
+  assert.match(report, /fail {2}\[submit-exists\]/);
+});
+
+test("between-threshold verdicts use all configured attempts when escalation is disabled", async () => {
+  const cwd = scaffold();
+  const runner = scriptedJev([0.5, 0.55, 0.45]);
+  const outcome = await runCommand({
+    cwd,
+    model: runner,
+    config: config({ escalate: false, reruns: 2 }),
+    interactive: true,
+    env: {},
+  });
+  assert.equal(runner.calls, 3);
+  assert.deepEqual(outcome.results[0]?.runs, ["unsure", "unsure", "unsure"]);
+  assert.equal(outcome.results[0]?.verdict, "unsure");
+});
+
+test("fallback false lets a decision API failure through", async () => {
+  const cwd = scaffold();
+  await assert.rejects(
+    () =>
+      runCommand({
+        cwd,
+        model: {
+          async decide() {
+            throw new Error("max_tokens_exceeded");
+          },
+          async complete() {
+            throw new Error("runner should not generate");
+          },
+        },
+        config: config({ fallback: false }),
+        interactive: true,
+        env: {},
+      }),
+    /max_tokens_exceeded/,
+  );
 });

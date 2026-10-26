@@ -1,6 +1,7 @@
 import fs from "node:fs";
 
 import { readText, writeText } from "../util/fs-util.js";
+import { hashContent } from "../util/hash.js";
 
 export interface TestCase {
   id: string;
@@ -25,8 +26,13 @@ export function slugify(text: string): string {
   return slug || "test";
 }
 
+/** Stable id for a claim the user wrote without a bracket id. */
+export function testIdFor(text: string): string {
+  return hashContent(text.trim()).slice(0, 12);
+}
+
 export function backfillTestIds(markdown: string): { markdown: string; tests: TestCase[]; changed: boolean } {
-  const { frontmatterRaw, body, newline } = splitDocument(markdown);
+  const { body, frontmatterRaw, newline } = splitDocument(markdown);
   const lines = body.split(/\r?\n/);
   const used = new Set<string>();
   for (const line of lines) {
@@ -34,25 +40,24 @@ export function backfillTestIds(markdown: string): { markdown: string; tests: Te
     if (parsed?.id) used.add(parsed.id);
   }
 
-  let changed = false;
   const tests: TestCase[] = [];
-  const nextLines = lines.map((line) => {
+  let changed = false;
+  const updatedLines = lines.map((line) => {
     const parsed = parseTestLine(line);
     if (!parsed) return line;
     if (parsed.id) {
       tests.push({ id: parsed.id, text: parsed.text });
       return line;
     }
-    const id = uniqueSlug(parsed.text, used);
+    const id = uniqueHash(parsed.text, used);
     used.add(id);
     tests.push({ id, text: parsed.text });
     changed = true;
-    return `- [${id}] ${parsed.text}`;
+    const bullet = /^([ \t]*[-*][ \t]+)(.*)$/.exec(line);
+    return bullet ? `${bullet[1]}[${id}] ${parsed.text}` : line;
   });
-
-  if (!changed) return { markdown, tests, changed: false };
-  const nextBody = nextLines.join(newline);
-  return { markdown: `${frontmatterRaw}${nextBody}`, tests, changed: true };
+  const updatedBody = updatedLines.join(newline);
+  return { markdown: changed ? `${frontmatterRaw}${updatedBody}` : markdown, tests, changed };
 }
 
 export function backfillSurfaceFile(filePath: string): { changed: boolean; tests: TestCase[] } {
@@ -102,8 +107,8 @@ export function writeSurface(filePath: string, markdown: string): void {
   writeText(filePath, markdown.endsWith("\n") ? markdown : `${markdown}\n`);
 }
 
-function uniqueSlug(text: string, used: Set<string>): string {
-  const base = slugify(text);
+function uniqueHash(text: string, used: Set<string>): string {
+  const base = testIdFor(text);
   if (!used.has(base)) return base;
   let suffix = 2;
   while (used.has(`${base}-${suffix}`)) suffix += 1;

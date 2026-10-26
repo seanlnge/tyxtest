@@ -19,6 +19,8 @@ export function defaultApiKeyEnv(provider: string): string | undefined {
       return "OPENAI_API_KEY";
     case "ollama":
       return undefined;
+    case "typesafe":
+      return "TYPESAFE_API_KEY";
     case "google":
     case "gemini":
       return "GEMINI_API_KEY";
@@ -101,6 +103,7 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     runnerModel: pickModel(raw.runnerModel, "runnerModel", "decision"),
     escalate: pickBoolean(raw.escalate, true, "escalate"),
     escalateModel: pickModel(raw.escalateModel, "escalateModel"),
+    fallback: pickBoolean(raw.fallback, true, "fallback"),
     thresholds: pickThresholds(raw.thresholds),
     ignoreUnchanged: pickBoolean(raw.ignoreUnchanged, true, "ignoreUnchanged"),
     baseRef: pickBaseRef(raw.baseRef),
@@ -109,6 +112,7 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     reruns: pickReruns(raw.reruns),
     verdictRule: pickVerdictRule(raw.verdictRule),
     unsureBlocks: pickBoolean(raw.unsureBlocks, false, "unsureBlocks"),
+    showCached: pickBoolean(raw.showCached, false, "showCached"),
     triage: pickBoolean(raw.triage, false, "triage"),
     relocateCheck: pickBoolean(raw.relocateCheck, true, "relocateCheck"),
     closureDepth: pickDepth(raw.closureDepth),
@@ -199,12 +203,12 @@ function pickInteger(value: unknown, fallback: number, label: string, minimum: n
   return picked;
 }
 
-function pickVerdictRule(value: unknown): "worst" {
+function pickVerdictRule(value: unknown): TyxtestConfig["verdictRule"] {
   const picked = value === undefined ? "worst" : value;
-  if (picked !== "worst") {
-    throw new Error('verdictRule must be "worst".');
+  if (picked !== "worst" && picked !== "majority" && picked !== "best") {
+    throw new Error('verdictRule must be "worst", "majority", or "best".');
   }
-  return "worst";
+  return picked;
 }
 
 function pickBoolean(value: unknown, fallback: boolean, label: string): boolean {

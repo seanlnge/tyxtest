@@ -1,0 +1,37 @@
+{
+  "indexModel": {
+    "provider": "openai",
+    "model": "gpt-6-luna",
+    "apiKeyEnv": "OPENAI_KEY"
+  },
+  "runnerModel": {
+    "provider": "typesafe",
+    "model": "jev",
+    "kind": "decision",
+    "apiKeyEnv": "TYPESAFE_API_KEY"
+  },
+  "escalate": true,
+  "escalateModel": null,
+  "fallback": true,
+  "thresholds": {
+    "pass": 0.9,
+    "fail": 0.1
+  },
+  "ignoreUnchanged": true,
+  "baseRef": "origin/main",
+  "entryMode": "ask-plain",
+  "nonInteractive": "fail",
+  "reruns": 2,
+  "verdictRule": "worst",
+  "unsureBlocks": false,
+  "triage": false,
+  "relocateCheck": true,
+  "maxQuestions": 5,
+  "chunkMaxTokens": 4000,
+  "concurrency": 8,
+  "closureDepth": null,
+  "guards": {
+    "literalKeyCheck": true,
+    "gitignoreEnv": true
+  }
+}

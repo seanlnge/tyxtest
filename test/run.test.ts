@@ -40,6 +40,7 @@ function writeFreshIndex(cwd: string): void {
     entry: ["src/login.ts"],
     files: closure.files.map((file) => ({ ...file, symbols: ["LoginForm"] })),
     notes: [],
+    tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }],
   });
 }
 
@@ -93,22 +94,60 @@ test("run passes with valid evidence, caches it, and does not write the index", 
   assert.equal(fs.existsSync(path.join(cwd, ".tyxtest/junit.xml")), true);
 });
 
-test("run aggregates all-fail and mixed verdicts", async () => {
+test("run -A rejudges a cached test and ignores unchanged skips", async () => {
+  const cwd = project();
+  writeFreshIndex(cwd);
+  await runCommand({ cwd, model: scriptedModel([pass]), interactive: true, env: {} });
+  let calls = 0;
+  const again = await runCommand({
+    cwd,
+    all: true,
+    interactive: true,
+    env: {},
+    model: {
+      async complete() {
+        calls += 1;
+        return pass;
+      },
+    },
+  });
+  assert.equal(calls, 1);
+  assert.equal(again.results[0]?.cached, false);
+  assert.equal(again.results[0]?.verdict, "pass");
+
+  const unchanged = project({ ignoreUnchanged: true });
+  writeFreshIndex(unchanged);
+  const judged = await runCommand({
+    cwd: unchanged,
+    all: true,
+    model: scriptedModel([pass]),
+    interactive: true,
+    env: {},
+  });
+  assert.equal(judged.results[0]?.verdict, "pass");
+  assert.equal(judged.results[0]?.verdict === "skipped", false);
+});
+
+test("an LLM runner judges once even when reruns is 2", async () => {
   const failing = project();
   writeFreshIndex(failing);
-  const failModel = scriptedModel([fail, fail, fail]);
-  const failed = await runCommand({ cwd: failing, model: failModel, interactive: true, env: {} });
-  assert.equal(failModel.requests.length, 3);
+  const failModel = scriptedModel([fail]);
+  let report = "";
+  const failed = await runCommand({
+    cwd: failing,
+    model: failModel,
+    interactive: true,
+    env: {},
+    stdout: (message) => {
+      report += message;
+    },
+  });
+  assert.equal(failModel.requests.length, 1);
   assert.equal(failed.results[0]?.verdict, "fail");
+  assert.deepEqual(failed.results[0]?.runs, ["fail"]);
   assert.equal(failed.exitCode, 1);
-
-  const mixed = project();
-  writeFreshIndex(mixed);
-  const mixedModel = scriptedModel([fail, pass, fail]);
-  const result = await runCommand({ cwd: mixed, model: mixedModel, interactive: true, env: {} });
-  assert.equal(mixedModel.requests.length, 3);
-  assert.equal(result.results[0]?.verdict, "unsure");
-  assert.equal(result.exitCode, 0);
+  assert.match(report, /fail {2}\[submit-exists\]/);
+  assert.match(report, /0 pass, 1 fail, 0 unsure/);
 });
 
 test("unindexed surfaces fail closed and search mode forces unsure without writing an index", async () => {

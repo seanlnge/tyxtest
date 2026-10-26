@@ -10,9 +10,47 @@ export interface ReportedTest {
   runs: Verdict[];
   evidence: Citation[];
   explanation: string;
+  /** Set when this run answered the test with the fallback model after the decision API failed. */
+  fallback?: string;
 }
 
-export function formatReport(results: ReportedTest[], unsureBlocks: boolean, verbose = false): string {
+export function aggregateFindings(results: ReportedTest[], verbose: boolean): string[] {
+  const lines: string[] = [];
+  for (const result of results) {
+    if (result.verdict !== "fail" && result.verdict !== "unsure" && !(verbose && result.verdict === "pass")) continue;
+    if (result.verdict === "pass" && result.evidence.length === 0 && !result.explanation) continue;
+    lines.push(`${result.verdict}  [${result.surface}/${result.id}] ${result.text}`);
+    for (const citation of result.evidence) lines.push(`  ${citation.file}:${citation.line}`);
+    if (result.explanation) lines.push(`  ${result.explanation}`);
+    lines.push("");
+  }
+  return lines;
+}
+
+export function summaryLines(results: ReportedTest[], unsureBlocks: boolean): string[] {
+  const counts = countVerdicts(results);
+  const lines = [
+    `${counts.pass} pass, ${counts.fail} fail, ${counts.unsure} unsure${counts.skipped ? `, ${counts.skipped} skipped (unchanged)` : ""}`,
+  ];
+  if (counts.fail > 0) lines.push("fail blocks CI");
+  if (counts.unsure > 0 && unsureBlocks) lines.push("unsure blocks CI");
+  return lines;
+}
+
+export function fallbackLines(results: ReportedTest[]): string[] {
+  const labels = results.flatMap((result) => (result.fallback ? [result.fallback] : []));
+  if (labels.length === 0) return [];
+  const models = [...new Set(labels)];
+  const noun = labels.length === 1 ? "1 test fell back" : `${labels.length} tests fell back`;
+  return [`${noun} to ${models.join(", ")} after the decision API failed`];
+}
+
+export function formatReport(
+  results: ReportedTest[],
+  unsureBlocks: boolean,
+  verbose = false,
+  showCached = false,
+): string {
   const lines: string[] = [];
   const groups = new Map<string, ReportedTest[]>();
   for (const result of results) {
@@ -21,31 +59,31 @@ export function formatReport(results: ReportedTest[], unsureBlocks: boolean, ver
     groups.set(result.surface, group);
   }
   for (const [surface, tests] of groups) {
+    const visible = showCached ? tests : tests.filter((test) => !test.cached);
+    if (visible.length === 0) continue;
     lines.push(surface);
-    for (const test of tests) {
+    for (const test of visible) {
       if (test.verdict === "skipped") {
         lines.push(`  skipped (unchanged)  [${test.id}] ${test.text}`);
         continue;
       }
       const cached = test.cached ? " (cached)" : "";
       lines.push(`  ${test.verdict}  [${test.id}] ${test.text}${cached}`);
-      if (test.verdict === "pass" && !verbose) continue;
-      for (const citation of test.evidence) {
-        lines.push(`    ${citation.file}:${citation.line}`);
-      }
-      if (test.explanation) lines.push(`    ${test.explanation}`);
     }
     lines.push("");
   }
-  const counts = countVerdicts(results);
-  lines.push(
-    `${counts.pass} pass, ${counts.fail} fail, ${counts.unsure} unsure${counts.skipped ? `, ${counts.skipped} skipped (unchanged)` : ""}`,
-  );
-  if (counts.fail > 0) lines.push("fail blocks CI");
-  if (counts.unsure > 0) {
-    lines.push(unsureBlocks ? "unsure blocks CI" : "unsure warns and does not block CI");
+  lines.push(...summaryLines(results, unsureBlocks));
+  const findings = aggregateFindings(results, verbose);
+  if (findings.length > 0) {
+    lines.push("");
+    lines.push(...findings);
   }
-  return `${lines.join("\n")}\n`;
+  const fallback = fallbackLines(results);
+  if (fallback.length > 0) {
+    lines.push("");
+    lines.push(...fallback);
+  }
+  return `${lines.join("\n").replace(/\n+$/, "")}\n`;
 }
 
 export function writeReports(dir: string, results: ReportedTest[], unsureBlocks: boolean): { json: string; junit: string } {
