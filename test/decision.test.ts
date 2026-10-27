@@ -5,13 +5,15 @@ import path from "node:path";
 import test from "node:test";
 
 import { chunkClosure } from "../src/closure/chunk.js";
-import { computeSurfaceClosure } from "../src/closure/closure.js";
+import { collectClosure } from "../src/closure/closure.js";
 import { parseConfig } from "../src/config/config.js";
-import { writeIndex } from "../src/surface/index-file.js";
+import { readIndex, writeIndex } from "../src/surface/index-file.js";
 import { formatReport } from "../src/verdict/reporter.js";
 import { runCommand } from "../src/commands/run.js";
 import type { DecisionRequest, ModelClient, TyxtestConfig } from "../src/config/types.js";
 import { tempDir } from "./helpers.js";
+
+const computeSurfaceClosure = ({ cwd, entry }: { cwd: string; entry: string }) => collectClosure({ cwd, entries: [entry], depth: null });
 
 const SOURCE = `export function header() {
   return 1;
@@ -24,6 +26,7 @@ export function SubmitButton() {
 
 function config(overrides: Record<string, unknown> = {}): TyxtestConfig {
   return parseConfig({
+    markdown: { tests: "bullets" },
     indexModel: { provider: "ollama", model: "index" },
     runnerModel: { kind: "decision", provider: "typesafe", model: "jev" },
     ignoreUnchanged: false,
@@ -256,7 +259,7 @@ test("ignoreUnchanged skips tests outside the diff", async () => {
   assert.match(formatReport(outcome.results, false), /skipped \(unchanged\)/);
 });
 
-test("each verdict sees the complete closure while evidence stays selected per test", async () => {
+test("each verdict and evidence request sees only its indexed symbols", async () => {
   const cwd = tempDir("tyxtest-chunks-");
   fs.mkdirSync(path.join(cwd, "tyxtest", "login"), { recursive: true });
   fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
@@ -281,7 +284,7 @@ test("each verdict sees the complete closure while evidence stays selected per t
   const model: ModelClient = {
     async decide(request) {
       if (request.purpose === "verdict") {
-        const id = request.state.includes("[submit-exists]") ? "submit-exists" : "header-exists";
+        const id = request.state.includes("There is a submit button") ? "submit-exists" : "header-exists";
         states.set(id, request.state);
       }
       return { probabilities: [0.95, 0.05] };
@@ -295,15 +298,15 @@ test("each verdict sees the complete closure while evidence stays selected per t
   const submit = states.get("submit-exists") ?? "";
   const header = states.get("header-exists") ?? "";
   assert.match(submit, /function SubmitButton/);
-  assert.match(submit, /function header/);
+  assert.doesNotMatch(submit, /function header/);
   assert.equal(submit.split("function SubmitButton").length - 1, 1);
   assert.match(header, /function header/);
-  assert.match(header, /function SubmitButton/);
+  assert.doesNotMatch(header, /function SubmitButton/);
   assert.deepEqual(outcome.results.find((result) => result.id === "submit-exists")?.evidence.map((item) => item.symbol), ["SubmitButton"]);
   assert.deepEqual(outcome.results.find((result) => result.id === "header-exists")?.evidence.map((item) => item.symbol), ["header"]);
 });
 
-test("caller disconnects, helper edits, and newly imported behavior change fresh decision verdicts without reindexing", async () => {
+test("explicit callers and helpers change verdicts but newly imported unmapped files are absent", async () => {
   const cwd = scaffold();
   const entry = 'import { helper } from "./helper.js";\nexport function SubmitButton() { return helper(); }\nexport function Login() { return SubmitButton(); }\n';
   fs.writeFileSync(path.join(cwd, "src/login.ts"), entry);
@@ -315,9 +318,9 @@ test("caller disconnects, helper edits, and newly imported behavior change fresh
     entry: ["src/login.ts"],
     files: closure.files.map((file) => ({ ...file, symbols: [] })),
     notes: [],
-    tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }] }],
+    tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }, { path: "src/login.ts", symbol: "Login" }, { path: "src/helper.ts", symbol: "helper" }] }],
   });
-  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json"));
+  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/.index.json"));
   const states: string[] = [];
   const model: ModelClient = {
     async decide(request) {
@@ -340,10 +343,10 @@ test("caller disconnects, helper edits, and newly imported behavior change fresh
   fs.writeFileSync(path.join(cwd, "src/helper.ts"), 'export function helper() { return "submit"; }\n');
   fs.writeFileSync(path.join(cwd, "src/policy.ts"), 'export const policy = "DISABLE_SUBMIT";\n');
   fs.writeFileSync(path.join(cwd, "src/login.ts"), 'import "./policy.js";\n' + entry);
-  assert.equal((await run()).results[0]?.verdict, "fail");
-  assert.match(states.at(-1) ?? "", /DISABLE_SUBMIT/);
-  assert.equal(states.length, 4);
-  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
+  assert.equal((await run()).results[0]?.verdict, "pass");
+  assert.doesNotMatch(states.at(-1) ?? "", /DISABLE_SUBMIT/);
+  assert.equal(states.length, 3);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/.index.json")), indexBefore);
 });
 
 test("a decision API failure falls back to the escalation model and notes it", async () => {
@@ -354,7 +357,7 @@ test("a decision API failure falls back to the escalation model and notes it", a
     cwd,
     model: {
       async decide() {
-        throw new Error("max_tokens_exceeded");
+        throw new Error('Model request failed (400): {"error_type":"max_tokens_exceeded","secret":"do-not-log"}');
       },
       async complete() {
         throw new Error("runner should not generate");
@@ -376,7 +379,10 @@ test("a decision API failure falls back to the escalation model and notes it", a
   assert.equal(used, "index");
   assert.equal(outcome.results[0]?.verdict, "fail");
   assert.equal(outcome.results[0]?.fallback, "ollama/index");
+  assert.match(outcome.results[0]?.fallbackReason ?? "", /exceeded the provider context limit.*HTTP 400/);
   assert.match(report, /1 test fell back to ollama\/index after the decision API failed/);
+  assert.match(report, /exceeded the provider context limit/);
+  assert.doesNotMatch(report, /do-not-log/);
 });
 
 function scriptedJev(pPasses: number[]): ModelClient & { calls: number } {
@@ -426,7 +432,7 @@ test("three Jev fails stay fail and call the decision model three times when rer
   assert.deepEqual(outcome.results[0]?.runs, ["fail", "fail", "fail"]);
   assert.equal(outcome.results[0]?.verdict, "fail");
   assert.equal(outcome.exitCode, 1);
-  assert.match(report, /fail {2}\[submit-exists\]/);
+  assert.match(report, /- fail There is a submit button/);
   assert.match(report, /0 pass, 1 fail, 0 unsure/);
 });
 
@@ -462,7 +468,7 @@ test("a Jev fail then pass escalates once and stops before the remaining rerun",
   assert.deepEqual(outcome.results[0]?.runs, ["fail"]);
   assert.equal(outcome.results[0]?.explanation, "escalated once");
   assert.equal(outcome.exitCode, 1);
-  assert.match(report, /fail {2}\[submit-exists\]/);
+  assert.match(report, /- fail There is a submit button/);
   assert.match(report, /0 pass, 1 fail, 0 unsure/);
 });
 
@@ -551,10 +557,10 @@ test("between-threshold verdict retries before escalating once", async () => {
   assert.equal(outcome.results[0]?.verdict, "fail");
   assert.deepEqual(outcome.results[0]?.runs, ["fail"]);
   assert.equal(outcome.exitCode, 1);
-  assert.match(report, /fail {2}\[submit-exists\]/);
+  assert.match(report, /- fail There is a submit button/);
 });
 
-test("LLM escalation receives the full surface closure, not only indexed chunks", async () => {
+test("LLM escalation receives only indexed chunks, not the surface snapshot", async () => {
   const cwd = scaffold(`import { helper } from "./helper.js";
 
 export function header() {
@@ -596,7 +602,8 @@ export function OtherFeature() {
     env: {},
   });
   assert.equal(runner.completes, 0);
-  assert.match(prompt, /TOKEN_HELPER_CONTEXT/);
+  assert.doesNotMatch(prompt, /TOKEN_HELPER_CONTEXT|function OtherFeature|function header/);
+  assert.match(prompt, /function SubmitButton/);
 });
 
 test("between-threshold verdicts use all configured attempts when escalation is disabled", async () => {
@@ -650,7 +657,7 @@ test("flow-step verdicts and escalations use fresh step closures and accept live
     flows: [{
       testId: "submit-exists",
       closure: stepClosure.files,
-      steps: [{ id: "checkout", text: "Checkout is reachable", entry: "src/step.ts", chunks: [{ path: "src/step.ts", symbol: "Checkout" }] }],
+      steps: [{ id: "checkout", text: "Checkout is reachable", entry: "src/step.ts", chunks: [{ path: "src/step.ts", symbol: "Checkout" }], context: ["src/added.ts"] }],
     }],
   });
   fs.writeFileSync(path.join(cwd, "src/step.ts"), 'import { helper } from "./added.js";\nexport function Checkout() { return helper(); }\n');
@@ -672,7 +679,7 @@ test("flow-step verdicts and escalations use fresh step closures and accept live
   assert.doesNotMatch(prompt, /function SubmitButton/);
 
   const indexFile = path.join(cwd, "tyxtest/login/.index.json");
-  const index = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+  const index = readIndex(indexFile);
   index.flows[0].steps[0].text = "Checkout is reachable after confirmation";
   writeIndex(indexFile, index);
   const revisedRunner = decisionRunner(0.95, () => 0.95);
@@ -705,7 +712,7 @@ test("triage reuses only the same claim, surface context, evidence mapping, and 
   const base = config({ triage: true, escalate: false, relocateCheck: false });
   const run = (settings = base) => runCommand({ cwd, model, config: settings, env: {}, stdout: () => {} });
   assert.equal((await run()).results[0]?.verdict, "pass");
-  fs.appendFileSync(path.join(cwd, "src/login.ts"), "export const edited = true;\n");
+  fs.writeFileSync(path.join(cwd, "src/login.ts"), SOURCE.replace('return "submit"', 'return "changed submit"'));
   assert.equal((await run()).results[0]?.cached, true);
   assert.equal(triages, 1);
   assert.equal(verdicts, 1);
@@ -727,7 +734,7 @@ test("triage reuses only the same claim, surface context, evidence mapping, and 
   assert.equal(verdicts, 4);
 
   const indexFile = path.join(cwd, "tyxtest/login/.index.json");
-  const index = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+  const index = readIndex(indexFile);
   index.tests[0].chunks = [{ path: "src/login.ts", symbol: "SubmitButton" }];
   writeIndex(indexFile, index);
   assert.equal((await run()).results[0]?.cached, false);
@@ -738,7 +745,7 @@ test("triage reuses only the same claim, surface context, evidence mapping, and 
 test("same test IDs on different surfaces do not share verdicts or triage", async () => {
   const cwd = scaffold();
   fs.mkdirSync(path.join(cwd, "tyxtest/other"));
-  fs.copyFileSync(path.join(cwd, "tyxtest/login/.index.json"), path.join(cwd, "tyxtest/other/.index.json"));
+  writeIndex(path.join(cwd, "tyxtest/other/.index.json"), readIndex(path.join(cwd, "tyxtest/login/.index.json")));
   fs.writeFileSync(path.join(cwd, "tyxtest/other/surface.md"), fs.readFileSync(path.join(cwd, "tyxtest/login/surface.md"), "utf8").replace("Login form", "Other form"));
   let verdicts = 0;
   const model: ModelClient = {
@@ -763,12 +770,12 @@ test("same test IDs on different surfaces do not share verdicts or triage", asyn
 test("a missing indexed evidence mapping stays unsure despite available closure code", async () => {
   const cwd = scaffold();
   const indexFile = path.join(cwd, "tyxtest/login/.index.json");
-  const index = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+  const index = readIndex(indexFile);
   index.tests = [];
   writeIndex(indexFile, index);
   const runner = decisionRunner(0.99, () => 0.99);
   const outcome = await runCommand({ cwd, model: runner, config: config(), env: {}, stdout: () => {} });
   assert.equal(outcome.results[0]?.verdict, "unsure");
-  assert.match(outcome.results[0]?.explanation ?? "", /no chunks indexed/);
+  assert.match(outcome.results[0]?.explanation ?? "", /new or changed since indexing/);
   assert.equal(runner.decides.length, 0);
 });

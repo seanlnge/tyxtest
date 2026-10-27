@@ -3,8 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { computeSurfaceClosure } from "../src/closure/closure.js";
-import { writeIndex } from "../src/surface/index-file.js";
+import { collectClosure } from "../src/closure/closure.js";
+import { claimHashFor, writeIndex } from "../src/surface/index-file.js";
+import { readTests } from "../src/surface/surface.js";
 import { runCommand } from "../src/commands/run.js";
 import type { ModelClient, ModelRequest } from "../src/config/types.js";
 import { tempDir } from "./helpers.js";
@@ -18,6 +19,7 @@ function project(extraConfig: Record<string, unknown> = {}): string {
   fs.writeFileSync(
     path.join(cwd, "tyxtest/tyxtest.config.json"),
     JSON.stringify({
+      markdown: { tests: "bullets" },
       indexModel: { provider: "ollama", model: "index" },
       runnerModel: { kind: "llm", provider: "ollama", model: "runner" },
       ignoreUnchanged: false,
@@ -33,14 +35,15 @@ function project(extraConfig: Record<string, unknown> = {}): string {
 }
 
 function writeFreshIndex(cwd: string): void {
-  const closure = computeSurfaceClosure({ cwd, entry: "src/login.ts", depth: null, parentClosure: null });
+  const closure = collectClosure({ cwd, entries: ["src/login.ts"], depth: null });
+  const testCase = readTests(fs.readFileSync(path.join(cwd, "tyxtest/login/surface.md"), "utf8"), { testDiscovery: { mode: "bullets", headingLevel: 2, prefix: null } })[0]!;
   writeIndex(path.join(cwd, "tyxtest/login/.index.json"), {
     closure: closure.files,
     closureHash: closure.closureHash,
     entry: ["src/login.ts"],
     files: closure.files.map((file) => ({ ...file, symbols: ["LoginForm"] })),
     notes: [],
-    tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }],
+    tests: [{ testId: testCase.id, claimHash: claimHashFor(testCase.text, testCase.notes), chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }],
   });
 }
 
@@ -67,7 +70,7 @@ const fail = JSON.stringify({ verdict: "fail", evidence: [], explanation: "No su
 test("run passes with valid evidence, caches it, and does not write the index", async () => {
   const cwd = project();
   writeFreshIndex(cwd);
-  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json"));
+  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/.index.json"));
   const model = scriptedModel([pass]);
   const first = await runCommand({ cwd, model, interactive: true, env: {} });
   assert.equal(first.exitCode, 0);
@@ -76,7 +79,7 @@ test("run passes with valid evidence, caches it, and does not write the index", 
   assert.equal(model.requests.length, 1);
   assert.match(model.requests[0]?.prompt ?? "", /TOKEN_LOGIN_SOURCE/);
   assert.equal((model.requests[0]?.prompt ?? "").includes("TOKEN_OTHER_SOURCE"), false);
-  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/.index.json")), indexBefore);
 
   const second = await runCommand({
     cwd,
@@ -170,18 +173,18 @@ test("an LLM runner judges once even when reruns is 2", async () => {
     },
   });
   assert.equal(failModel.requests.length, 1);
-  assert.match(failModel.requests[0]?.prompt ?? "", /TOKEN_HELPER_CONTEXT/);
+  assert.doesNotMatch(failModel.requests[0]?.prompt ?? "", /TOKEN_HELPER_CONTEXT|function OtherFeature/);
   assert.equal(failed.results[0]?.verdict, "fail");
   assert.deepEqual(failed.results[0]?.runs, ["fail"]);
   assert.equal(failed.exitCode, 1);
-  assert.match(report, /fail {2}\[submit-exists\]/);
-  assert.match(report, /0 pass, 1 fail, 0 unsure/);
+  assert.match(report, /- fail There is a submit button/);
+  assert.match(report.replace(/\x1b\[[0-9;]*m/g, ""), /0 pass, 1 fail, 0 unsure/);
 });
 
-test("LLM passes can cite edited source and newly imported files without reindexing", async () => {
+test("LLM passes can cite fresh mapped source but not newly imported unmapped files", async () => {
   const cwd = project();
   writeFreshIndex(cwd);
-  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json"));
+  const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/.index.json"));
   fs.writeFileSync(path.join(cwd, "src/login.ts"), 'export function LoginForm() { return "EDITED_LOGIN"; }\n');
   const edited = await runCommand({ cwd, model: scriptedModel([pass]), env: {}, stdout: () => {} });
   assert.equal(edited.results[0]?.verdict, "pass");
@@ -189,9 +192,9 @@ test("LLM passes can cite edited source and newly imported files without reindex
   fs.writeFileSync(path.join(cwd, "src/new.ts"), 'export function submit() { return "NEW_IMPORT"; }\n');
   const model = scriptedModel([JSON.stringify({ verdict: "pass", evidence: [{ file: "src/new.ts", line: 1 }] })]);
   const added = await runCommand({ cwd, model, env: {}, stdout: () => {}, stderr: () => {} });
-  assert.equal(added.results[0]?.verdict, "pass");
-  assert.match(model.requests[0]?.prompt ?? "", /NEW_IMPORT/);
-  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/login/.index.json")), indexBefore);
+  assert.equal(added.results[0]?.verdict, "unsure");
+  assert.doesNotMatch(model.requests[0]?.prompt ?? "", /NEW_IMPORT/);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/.index.json")), indexBefore);
 });
 
 test("LLM citation checks reject nonexistent, out-of-closure, and invalid line citations", async () => {
@@ -241,4 +244,70 @@ test("unindexed surfaces fail closed and search mode forces unsure without writi
   assert.equal(searched.results[0]?.verdict, "unsure");
   assert.equal(fs.existsSync(path.join(cwd, "tyxtest/login/.index.json")), false);
   assert.equal(model.requests.map((request) => request.purpose).join(","), "search,run");
+});
+
+test("run delivers notes to the model and rejects cached judgments after a claim changes", async () => {
+  const cwd = project();
+  const surfaceFile = path.join(cwd, "tyxtest/login/surface.md");
+  fs.writeFileSync(surfaceFile, "---\nsurface: Login form\nentry: src/login.ts\n---\n- [submit-exists] There is a submit button\n  It must use the accessible label.\n");
+  writeFreshIndex(cwd);
+  const model = scriptedModel([pass]);
+  const judged = await runCommand({ cwd, model, all: true, env: {}, stdout: () => {} });
+  assert.equal(judged.results[0]?.verdict, "pass");
+  assert.match(model.requests[0]?.prompt ?? "", /Specification:\nIt must use the accessible label\./);
+
+  fs.writeFileSync(surfaceFile, "---\nsurface: Login form\nentry: src/login.ts\n---\n- [submit-exists] There is a submit button\n  It must have keyboard support.\n");
+  const warnings: string[] = [];
+  const changed = await runCommand({
+    cwd,
+    env: {},
+    stdout: () => {},
+    stderr: (message) => warnings.push(message),
+    model: { async complete() { throw new Error("changed test must not reuse the old mapping or cache"); } },
+  });
+  assert.equal(changed.results[0]?.verdict, "unsure");
+  assert.equal(changed.results[0]?.cached, false);
+  assert.match(warnings.join("\n"), /index stale: test/);
+});
+
+test("run token footer reports per-run deltas for reused model clients", async () => {
+  const cwd = project();
+  writeFreshIndex(cwd);
+  let inputTokens = 0;
+  let outputTokens = 0;
+  const model: ModelClient = {
+    async complete() {
+      inputTokens += 20;
+      outputTokens += 3;
+      return pass;
+    },
+    usage() { return { inputTokens, outputTokens, available: true }; },
+  };
+  let firstReport = "";
+  await runCommand({ cwd, model, all: true, env: {}, stdout: (message) => { firstReport += message; } });
+  assert.match(firstReport, /runner tokens: 20 input, 3 output/);
+  let cachedReport = "";
+  await runCommand({ cwd, model, env: {}, stdout: (message) => { cachedReport += message; } });
+  assert.match(cachedReport, /runner tokens: 0 input, 0 output/);
+});
+
+test("run token footer separates decision-runner and fallback-model usage", async () => {
+  const cwd = project({ runnerModel: { kind: "decision", provider: "typesafe", model: "jev" }, fallback: true, reruns: 0 });
+  writeFreshIndex(cwd);
+  const runner: ModelClient = {
+    async complete() { throw new Error("decision model does not generate"); },
+    async decide() { throw new Error("decision API unavailable"); },
+    usage() { return { inputTokens: 0, outputTokens: 0, available: true }; },
+  };
+  let inputTokens = 7;
+  let outputTokens = 2;
+  const fallback: ModelClient = {
+    async complete() { inputTokens += 7; outputTokens += 2; return pass; },
+    usage() { return { inputTokens, outputTokens, available: true }; },
+  };
+  let report = "";
+  const outcome = await runCommand({ cwd, model: runner, escalateModel: fallback, all: true, env: {}, stdout: (message) => { report += message; } });
+  assert.equal(outcome.results[0]?.verdict, "pass");
+  assert.match(report, /runner tokens: 0 input, 0 output/);
+  assert.match(report, /fallback-model tokens: 7 input, 2 output/);
 });

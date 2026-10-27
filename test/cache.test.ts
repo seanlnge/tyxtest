@@ -19,6 +19,7 @@ const base = {
 };
 
 const config: TyxtestConfig = {
+  markdown: { testDiscovery: { mode: "headings", headingLevel: 2, prefix: null } },
   runnerModel: { provider: "test", model: "decision-v1", kind: "decision", apiKeyEnv: "TEST_KEY" },
   indexModel: { provider: "test", model: "index-v1" },
   escalate: true,
@@ -27,7 +28,6 @@ const config: TyxtestConfig = {
   thresholds: { pass: 0.9, fail: 0.1 },
   ignoreUnchanged: false,
   baseRef: "main",
-  entryMode: "required",
   nonInteractive: "fail",
   reruns: 1,
   verdictRule: "worst",
@@ -35,7 +35,6 @@ const config: TyxtestConfig = {
   showCached: false,
   triage: true,
   relocateCheck: true,
-  closureDepth: null,
   maxQuestions: 5,
   chunkMaxTokens: 4000,
   concurrency: 8,
@@ -64,10 +63,12 @@ test("cache keys change when any component changes", () => {
 
 test("judgment context fingerprints judgment policy and ordered flow content", () => {
   const fingerprint = judgmentContextFingerprint(config, surface, flows);
-  assert.match(fingerprint, /^jctx-v1:[a-f0-9]{64}$/);
+  assert.match(fingerprint, /^jctx-v6:[a-f0-9]{64}$/);
   assert.equal(fingerprint, judgmentContextFingerprint({ ...config }, { ...surface }, structuredClone(flows)));
   const step = flows[0]!.steps[0]!;
   const invalidations: Array<[string, TyxtestConfig, typeof surface, FlowRecord[]]> = [
+    ["Markdown discovery mode", { ...config, markdown: { testDiscovery: { mode: "bullets", headingLevel: 2, prefix: null } } }, surface, flows],
+    ["Markdown discovery prefix", { ...config, markdown: { testDiscovery: { mode: "headings", headingLevel: 2, prefix: "Test:" } } }, surface, flows],
     ["surface path namespace", config, { ...surface, relativeDir: "admin/checkout" }, flows],
     ["surface description", config, { ...surface, description: "Different claim context" }, flows],
     ["thresholds", { ...config, thresholds: { pass: 0.95, fail: 0.1 } }, surface, flows],
@@ -78,7 +79,7 @@ test("judgment context fingerprints judgment policy and ordered flow content", (
     ["fallback policy", { ...config, fallback: false }, surface, flows],
     ["retry count", { ...config, reruns: 2 }, surface, flows],
     ["verdict aggregation", { ...config, verdictRule: "majority" }, surface, flows],
-    ["flow entry", config, surface, [{ ...flows[0]!, steps: [{ ...step, entry: "src/other.ts" }] }]],
+    ["flow source context", config, surface, [{ ...flows[0]!, steps: [{ ...step, context: ["src/other.ts"] }] }]],
     ["flow step order", config, surface, [{ ...flows[0]!, steps: [{ ...step, id: "first" }, { ...step, id: "second" }] }]],
     ["flow chunk mapping", config, surface, [{ ...flows[0]!, steps: [{ ...step, chunks: [{ path: "src/other.ts", symbol: "other" }] }] }]],
   ];
@@ -113,6 +114,14 @@ test("judgment context fingerprints judgment policy and ordered flow content", (
 
 test("cache keys incorporate the versioned judgment context", () => {
   assert.notEqual(cacheKey(base), cacheKey({ ...base, judgmentContext: "jctx-v1:different" }));
+});
+
+test("semantic ancestor context changes judgment fingerprints", () => {
+  const baseContext = "# Account\nDescription: member settings";
+  const fingerprint = judgmentContextFingerprint(config, surface, [], [], baseContext);
+  assert.notEqual(fingerprint, judgmentContextFingerprint(config, surface, [], [], `${baseContext}\n- Claims require authentication`));
+  assert.notEqual(fingerprint, judgmentContextFingerprint(config, surface, [], [], "# Account renamed\nDescription: member settings"));
+  assert.notEqual(fingerprint, judgmentContextFingerprint(config, surface, [], [], "# Account\nDescription: administrator settings"));
 });
 
 test("lockfile hash changes when the lockfile changes", () => {

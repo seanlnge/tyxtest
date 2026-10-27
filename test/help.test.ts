@@ -52,8 +52,11 @@ test("help run and run -h print the run flags", async () => {
     assert.match(out, /Every non-pass is retried/);
     assert.match(out, /an unsure aggregate escalates once/);
     assert.match(out, /The escalation model does not rerun/);
-    assert.match(out, /fresh import closure/);
+    assert.match(out, /own fresh source context/);
     assert.match(out, /Indexed chunks select evidence, not the complete verdict context/);
+    assert.match(out, /markdown\.testDiscovery\.prefix/);
+    assert.match(out, /Nonmatching peer headings still end tests/);
+    assert.match(out, /nesting supplies semantic context and never restricts source files/);
   }
 });
 
@@ -66,4 +69,20 @@ test("index help documents --fix", async () => {
   });
   assert.equal(code, 0);
   assert.match(out, /--fix/);
+  assert.match(out, /shared tyxtest\/\.index\.json/);
+  assert.match(out, /single-line records/);
+  assert.match(out, /No entry file is required/);
+  assert.match(out, /product context, not file restrictions/);
+});
+
+test("setup help describes normal index merging instead of installing an ours driver", async () => {
+  let out = "";
+  const code = await main(["setup", "--help"], {
+    stdout: (message) => { out += message; },
+    stderr: () => {},
+    stdinIsTTY: false,
+  });
+  assert.equal(code, 0);
+  assert.match(out, /remove the old index merge=ours rule/);
+  assert.match(out, /line-based merging/);
 });

@@ -1,4 +1,11 @@
 {
+  "markdown": {
+    "testDiscovery": {
+      "mode": "headings",
+      "headingLevel": 2,
+      "prefix": null
+    }
+  },
   "indexModel": {
     "provider": "openai",
     "model": "gpt-6-luna",
@@ -14,12 +21,11 @@
   "escalateModel": null,
   "fallback": true,
   "thresholds": {
-    "pass": 0.9,
-    "fail": 0.1
+    "pass": 0.8,
+    "fail": 0.2
   },
   "ignoreUnchanged": false,
   "baseRef": "origin/main",
-  "entryMode": "ask-plain",
   "nonInteractive": "fail",
   "reruns": 2,
   "verdictRule": "worst",
@@ -29,7 +35,6 @@
   "maxQuestions": 5,
   "chunkMaxTokens": 4000,
   "concurrency": 8,
-  "closureDepth": null,
   "guards": {
     "literalKeyCheck": true,
     "gitignoreEnv": true

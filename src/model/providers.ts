@@ -1,8 +1,31 @@
 import { withRateLimitBackoff } from "./backoff.js";
 import { resolveApiKey, resolveApiKeyName } from "../config/config.js";
-import type { DecisionAnswer, DecisionRequest, ModelClient, ModelConfig, ModelRequest } from "../config/types.js";
+import type { DecisionAnswer, DecisionRequest, ModelClient, ModelConfig, ModelRequest, ModelUsage } from "../config/types.js";
 
 const REQUEST_TIMEOUT_MS = 120_000;
+
+function addUsage(current: ModelUsage, payload: unknown): void {
+  if (!payload || typeof payload !== "object") {
+    current.available = false;
+    return;
+  }
+  const usage = (payload as { usage?: unknown }).usage;
+  const record = usage && typeof usage === "object" ? usage as Record<string, unknown> : {};
+  const data = payload as Record<string, unknown>;
+  const input = record.input_tokens ?? record.prompt_tokens ?? data.prompt_eval_count;
+  const output = record.output_tokens ?? record.completion_tokens ?? data.eval_count;
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  if (valid(input)) current.inputTokens += input;
+  if (valid(output)) current.outputTokens += output;
+  current.available &&= valid(input) && valid(output);
+  for (const value of [record.cache_creation_input_tokens, record.cache_read_input_tokens]) {
+    if (value === undefined) continue;
+    if (valid(value)) current.inputTokens += value;
+    else current.available = false;
+  }
+}
+
+function newUsage(): ModelUsage { return { inputTokens: 0, outputTokens: 0, available: true }; }
 
 export function createModelClient(config: ModelConfig, env: NodeJS.ProcessEnv): ModelClient {
   if (config.kind === "decision") return createDecisionClient(config, env);
@@ -32,10 +55,13 @@ function createDecisionClient(config: ModelConfig, env: NodeJS.ProcessEnv): Mode
 }
 
 class AnthropicClient implements ModelClient {
+  private readonly totals = newUsage();
   constructor(
     private readonly model: string,
     private readonly apiKey: string,
   ) {}
+
+  usage(): ModelUsage | undefined { return this.totals.available ? { ...this.totals } : undefined; }
 
   async complete(request: ModelRequest): Promise<string> {
     const body: Record<string, unknown> = {
@@ -48,6 +74,7 @@ class AnthropicClient implements ModelClient {
       "x-api-key": this.apiKey,
       "anthropic-version": "2023-06-01",
     });
+    addUsage(this.totals, payload);
     const content = (payload as { content?: Array<{ text?: string }> }).content;
     const text = content?.map((block) => block.text ?? "").join("") ?? "";
     if (!text) throw new Error("Anthropic returned an empty response.");
@@ -56,10 +83,13 @@ class AnthropicClient implements ModelClient {
 }
 
 class OpenAIClient implements ModelClient {
+  private readonly totals = newUsage();
   constructor(
     private readonly model: string,
     private readonly apiKey: string,
   ) {}
+
+  usage(): ModelUsage | undefined { return this.totals.available ? { ...this.totals } : undefined; }
 
   async complete(request: ModelRequest): Promise<string> {
     const messages = [];
@@ -70,6 +100,7 @@ class OpenAIClient implements ModelClient {
       { model: this.model, messages },
       { authorization: `Bearer ${this.apiKey}` },
     );
+    addUsage(this.totals, payload);
     const message = (payload as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message
       ?.content;
     const text = contentText(message);
@@ -79,10 +110,13 @@ class OpenAIClient implements ModelClient {
 }
 
 class OllamaClient implements ModelClient {
+  private readonly totals = newUsage();
   constructor(
     private readonly model: string,
     private readonly env: NodeJS.ProcessEnv,
   ) {}
+
+  usage(): ModelUsage | undefined { return this.totals.available ? { ...this.totals } : undefined; }
 
   async complete(request: ModelRequest): Promise<string> {
     const host = (this.env.OLLAMA_HOST || "http://127.0.0.1:11434").replace(/\/$/, "");
@@ -90,6 +124,7 @@ class OllamaClient implements ModelClient {
     if (request.system) messages.push({ role: "system", content: request.system });
     messages.push({ role: "user", content: request.prompt });
     const payload = await postJson(`${host}/api/chat`, { model: this.model, messages, stream: false }, {});
+    addUsage(this.totals, payload);
     const text = (payload as { message?: { content?: string } }).message?.content ?? "";
     if (!text) throw new Error("Ollama returned an empty response.");
     return text;
@@ -135,11 +170,14 @@ async function postJsonOnce(url: string, body: unknown, headers: Record<string, 
 }
 
 class DecisionClient implements ModelClient {
+  private readonly totals = newUsage();
   constructor(
     private readonly config: ModelConfig,
     private readonly apiKey: string,
     private readonly env: NodeJS.ProcessEnv,
   ) {}
+
+  usage(): ModelUsage | undefined { return this.totals.available ? { ...this.totals } : undefined; }
 
   async complete(): Promise<string> {
     throw new Error("Decision models cannot generate text.");
@@ -159,19 +197,22 @@ class DecisionClient implements ModelClient {
         },
         { authorization: `Bearer ${this.apiKey}` },
       );
+      addUsage(this.totals, payload);
       return { probabilities: readProbabilities(payload, request.options) };
     }
     const laya = provider === "laya" || model.toLowerCase().startsWith("laya");
     const url = laya ? layaUrl(this.env) : typesafeUrl(this.env);
+    const shared = provider === "typesafe" && !laya ? request.sharedState : undefined;
     const payload = await postJson(
       url,
       {
         model,
-        state: request.state,
-        questions: { answer: question },
+        state: shared ? { scope0: shared.scope } : request.state,
+        questions: { answer: shared ? choiceQuestion(request, "scope0", true) : question },
       },
       { authorization: `Bearer ${this.apiKey}` },
     );
+    addUsage(this.totals, payload);
     return { probabilities: readChoiceProbabilities(payload, request.options) };
   }
 
@@ -185,16 +226,29 @@ class DecisionClient implements ModelClient {
       return answers;
     }
     const model = this.config.model === "jev" ? "jev-latest" : this.config.model;
-    const state: Record<string, string> = {};
+    const laya = provider === "laya" || model.toLowerCase().startsWith("laya");
+    const state: Record<string, string | NonNullable<DecisionRequest["sharedState"]>["scope"]> = {};
+    const scopes = new Map<NonNullable<DecisionRequest["sharedState"]>["scope"], string>();
     const questions: Record<string, ReturnType<typeof choiceQuestion>> = {};
     requests.forEach((request, index) => {
       const key = `q${index}`;
-      state[key] = request.state;
-      questions[key] = choiceQuestion(request, key);
+      const shared = provider === "typesafe" && !laya ? request.sharedState : undefined;
+      if (shared) {
+        let scopeKey = scopes.get(shared.scope);
+        if (!scopeKey) {
+          scopeKey = `scope${scopes.size}`;
+          scopes.set(shared.scope, scopeKey);
+          state[scopeKey] = shared.scope;
+        }
+        questions[key] = choiceQuestion(request, scopeKey, true);
+      } else {
+        state[key] = request.state;
+        questions[key] = choiceQuestion(request, key);
+      }
     });
-    const laya = provider === "laya" || model.toLowerCase().startsWith("laya");
     const url = laya ? layaUrl(this.env) : typesafeUrl(this.env);
     const payload = await postJson(url, { model, state, questions }, { authorization: `Bearer ${this.apiKey}` });
+    addUsage(this.totals, payload);
     return requests.map((request, index) => ({
       probabilities: readChoiceProbabilities(payload, request.options, `q${index}`),
     }));
@@ -225,6 +279,7 @@ const CHOICE_CRITERIA: Record<DecisionRequest["purpose"], Record<string, string>
 function choiceQuestion(
   request: DecisionRequest,
   stateKey?: string,
+  shared = false,
 ): {
   type: "choice";
   instructions: string;
@@ -233,9 +288,17 @@ function choiceQuestion(
   const known = CHOICE_CRITERIA[request.purpose];
   const criteria: Record<string, string> = {};
   for (const option of request.options) criteria[option] = known[option] ?? option;
-  const instructions = stateKey
+  let instructions = stateKey
     ? `${CHOICE_INSTRUCTIONS[request.purpose]} Use only \`${stateKey}\`.`
     : CHOICE_INSTRUCTIONS[request.purpose];
+  if (shared) {
+    instructions = `${CHOICE_INSTRUCTIONS[request.purpose]} Use only \`state.${stateKey}\`, including its claim, full specification and semantic context; ignore all other scopes.`;
+    if (request.purpose === "evidence") {
+      const target = request.sharedState?.chunk;
+      if (!target) throw new Error("Shared evidence questions require an explicit source chunk target.");
+      instructions += ` Evaluate only chunk ${JSON.stringify(`${target.path}#${target.symbol}`)} at original source lines ${target.line}-${target.endLine} as evidence for that scope's claim. Other chunks are context, not substitutes for the targeted chunk.`;
+    }
+  }
   return { type: "choice", instructions, criteria };
 }
 

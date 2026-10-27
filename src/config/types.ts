@@ -19,8 +19,6 @@ export interface ModelConfig {
   kind?: ModelKind;
 }
 
-export type EntryMode = "ask-plain" | "ask-entry" | "required";
-
 export type NonInteractive = "fail" | "search";
 
 export interface Guards {
@@ -33,7 +31,16 @@ export interface Thresholds {
   fail: number;
 }
 
+export interface MarkdownConfig {
+  testDiscovery: {
+    mode: "headings" | "bullets";
+    headingLevel: 2 | 3 | 4 | 5 | 6;
+    prefix: string | null;
+  };
+}
+
 export interface TyxtestConfig {
+  markdown: MarkdownConfig;
   indexModel?: ModelConfig;
   runnerModel?: ModelConfig;
   escalate: boolean;
@@ -43,7 +50,6 @@ export interface TyxtestConfig {
   thresholds: Thresholds;
   ignoreUnchanged: boolean;
   baseRef: string;
-  entryMode: EntryMode;
   nonInteractive: NonInteractive;
   reruns: number;
   verdictRule: "worst" | "majority" | "best";
@@ -52,14 +58,13 @@ export interface TyxtestConfig {
   showCached: boolean;
   triage: boolean;
   relocateCheck: boolean;
-  closureDepth: number | null;
   maxQuestions: number;
   chunkMaxTokens: number;
   concurrency: number;
   guards: Guards;
 }
 
-export type ModelPurpose = "index" | "run" | "resolve-entry" | "generate" | "search" | "relocate";
+export type ModelPurpose = "index" | "run" | "generate" | "search" | "relocate";
 
 export interface ModelRequest {
   purpose: ModelPurpose;
@@ -69,10 +74,21 @@ export interface ModelRequest {
 
 export type DecisionPurpose = "verdict" | "evidence" | "triage";
 
+/** One complete logical test/step context, shared by object identity within a batch. */
+export interface DecisionScope {
+  id: string;
+  state: string;
+}
+
 export interface DecisionRequest {
   purpose: DecisionPurpose;
   state: string;
   options: string[];
+  /** Optional native System One wire scope; state remains complete for other clients. */
+  sharedState?: {
+    scope: DecisionScope;
+    chunk?: { path: string; symbol: string; line: number; endLine: number };
+  };
 }
 
 /** Probabilities aligned with `options`, in that same order. Decision models do not return text or line numbers. */
@@ -80,8 +96,17 @@ export interface DecisionAnswer {
   probabilities: number[];
 }
 
+/** Provider-reported token usage. Missing usage is intentionally not estimated. */
+export interface ModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  available: boolean;
+}
+
 export interface ModelClient {
   complete(request: ModelRequest): Promise<string>;
+  /** Cumulative usage reported by successful provider responses, when available. */
+  usage?(): ModelUsage | undefined;
   decide?(request: DecisionRequest): Promise<DecisionAnswer>;
   /** One System One request for every question. Falls back to decide() when absent. */
   decideMany?(requests: DecisionRequest[]): Promise<DecisionAnswer[]>;

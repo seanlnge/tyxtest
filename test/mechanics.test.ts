@@ -5,21 +5,25 @@ import test from "node:test";
 
 import { withRateLimitBackoff } from "../src/model/backoff.js";
 import { chunkSource, evidenceForChunks, evidenceIdentity } from "../src/closure/chunk.js";
-import { computeSurfaceClosure, hashClosure } from "../src/closure/closure.js";
+import { collectClosure, hashClosure } from "../src/closure/closure.js";
 import { parseConfig } from "../src/config/config.js";
 import { generateCommand } from "../src/commands/generate.js";
 import { hashContent } from "../src/util/hash.js";
 import { indexCommand } from "../src/commands/index-command.js";
-import { readIndex, writeIndex, type FlowRecord } from "../src/surface/index-file.js";
+import { readIndex, readIndexes, writeIndex, type FlowRecord } from "../src/surface/index-file.js";
 import { mapPool } from "../src/util/pool.js";
 import { readPending } from "../src/surface/pending.js";
+import { readTests } from "../src/surface/surface.js";
 import { formatReport, type ReportedTest } from "../src/verdict/reporter.js";
 import { runCommand } from "../src/commands/run.js";
 import type { DecisionRequest, ModelClient, ModelRequest, TyxtestConfig } from "../src/config/types.js";
 import { scriptedPrompter, tempDir } from "./helpers.js";
 
+const computeSurfaceClosure = ({ cwd, entry }: { cwd: string; entry: string }) => collectClosure({ cwd, entries: [entry], depth: null });
+
 function config(overrides: Record<string, unknown> = {}): TyxtestConfig {
   return parseConfig({
+    markdown: { tests: "bullets" },
     indexModel: { provider: "ollama", model: "index" },
     runnerModel: { kind: "decision", provider: "typesafe", model: "jev" },
     ignoreUnchanged: false,
@@ -93,7 +97,7 @@ test("evidence identity is symbol plus content hash, with file:line only for dis
 
 test("the reporter prints evidence for fail and unsure, and for pass only with --verbose", () => {
   const pass = formatReport([reported()], false, false);
-  assert.match(pass, /pass  \[submit-exists\]/);
+  assert.match(pass, /- pass There is a submit button/);
   assert.doesNotMatch(pass, /src\/login\.ts:4/);
   assert.doesNotMatch(pass, /the button is in the form/);
   const verbose = formatReport([reported()], false, true);
@@ -104,7 +108,24 @@ test("the reporter prints evidence for fail and unsure, and for pass only with -
   const unsure = formatReport([reported({ verdict: "unsure", runs: ["unsure"] })], false, false);
   assert.match(unsure, /src\/login\.ts:4/);
   assert.doesNotMatch(unsure, /unsure warns and does not block CI/);
-  assert.ok(unsure.indexOf("[submit-exists]") < unsure.lastIndexOf("src/login.ts:4"));
+  assert.ok(unsure.indexOf("There is a submit button") < unsure.lastIndexOf("src/login.ts:4"));
+});
+
+test("report headings include only visible tests and their ancestors", () => {
+  const titles = new Map([
+    ["index", "Index commands"],
+    ["index/apply", "Apply suggestions"],
+    ["run", "Run command"],
+  ]);
+  const child = reported({ surface: "index/apply" });
+  const selected = formatReport([child], false, false, false, titles);
+  assert.match(selected, /^Index commands\/\n  Apply suggestions\/\n    - pass/m);
+  assert.doesNotMatch(selected, /Run command/);
+  const cached = formatReport([{ ...child, cached: true }], false, false, false, titles);
+  assert.doesNotMatch(cached, /Index commands|Apply suggestions|Run command/);
+  const shown = formatReport([{ ...child, cached: true }], false, false, true, titles);
+  assert.match(shown, /Apply suggestions/);
+  assert.match(shown, /pass \(cached\)/);
 });
 
 test("mapPool never runs more than the concurrency limit", async () => {
@@ -251,7 +272,7 @@ const FLOW_STEPS: FlowRecord["steps"] = [
   },
 ];
 
-test("index stores flow steps and the union of their closures", async () => {
+test("index stores flow steps with per-step source context", async () => {
   const { cwd, indexPath } = writeFlowRepo("from landing the user reaches Stripe checkout in at most 5 clicks");
   const model: ModelClient = {
     async complete(request: ModelRequest) {
@@ -271,11 +292,8 @@ test("index stores flow steps and the union of their closures", async () => {
   assert.equal(flow.steps.length, 3);
   assert.equal(flow.steps[0]?.chunks[0]?.symbol, "Landing");
   assert.equal(index.tests?.[0]?.chunks[0]?.symbol, "Landing");
-  assert.deepEqual(
-    flow.closure.map((file) => file.path),
-    ["src/checkout.ts", "src/landing.ts", "src/pricing.ts"],
-  );
-  assert.equal(flow.closure.length, new Set(flow.closure.map((file) => file.path)).size);
+  assert.deepEqual(flow.steps.map((step) => step.chunks[0]?.path), ["src/landing.ts", "src/pricing.ts", "src/checkout.ts"]);
+  assert.ok(index.tests?.[0]?.closure?.some((file) => file.path === "src/checkout.ts"));
 });
 
 test("a flow longer than at most N fails without a model call", async () => {
@@ -349,7 +367,7 @@ test("a failed flow step records a pending suggestion and does not write the ind
     notes: [],
     flows: [flowRecord(cwd, FLOW_STEPS.slice(0, 2))],
   });
-  const before = fs.readFileSync(indexPath);
+  const before = fs.readFileSync(path.join(cwd, "tyxtest/.index.json"));
   const purposes: string[] = [];
   const model: ModelClient = {
     async decide(request: DecisionRequest) {
@@ -365,7 +383,7 @@ test("a failed flow step records a pending suggestion and does not write the ind
   assert.deepEqual(purposes, ["relocate"]);
   assert.equal(outcome.results[0]?.verdict, "unsure");
   assert.match(outcome.results[0]?.explanation ?? "", /src\/billing\.ts/);
-  assert.deepEqual(fs.readFileSync(indexPath), before);
+  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/.index.json")), before);
   const pending = readPending(cwd);
   assert.equal(pending.length, 1);
   assert.equal(pending[0]?.surface, "landing");
@@ -394,7 +412,7 @@ function writeLogin(cwd: string, source: string): string {
     notes: [],
     tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }] }],
   });
-  return indexPath;
+  return path.join(cwd, "tyxtest/.index.json");
 }
 
 test("escalation records a pending suggestion locally and does not write the index", async () => {
@@ -492,13 +510,13 @@ test("index --pending reindexes only the flagged surface and clears it", async (
     path.join(cwd, "tyxtest/.pending.json"),
     `${JSON.stringify({ suggestions: [{ surface: "login", testId: "exists", reason: "index may be stale" }] }, null, 2)}\n`,
   );
-  const billingBefore = fs.readFileSync(path.join(cwd, "tyxtest/billing/.index.json"));
+  const billingBefore = readIndex(path.join(cwd, "tyxtest/billing/.index.json"));
   const seen: string[] = [];
   const model: ModelClient = {
     async complete(request: ModelRequest) {
       seen.push(request.prompt);
       const surface = request.prompt.includes("Surface: login") ? "login" : "billing";
-      return JSON.stringify({ files: [{ path: `src/${surface}.ts`, symbols: [surface] }], notes: ["refreshed"] });
+      return JSON.stringify({ tests: [{ testId: "exists", chunks: [{ path: `src/${surface}.ts`, symbol: surface }] }], notes: ["refreshed"] });
     },
   };
   const logs: string[] = [];
@@ -516,7 +534,7 @@ test("index --pending reindexes only the flagged surface and clears it", async (
   assert.match(seen[0] ?? "", /Pending suggestions/);
   const login = readIndex(path.join(cwd, "tyxtest/login/.index.json"));
   assert.deepEqual(login.notes, ["refreshed"]);
-  assert.deepEqual(fs.readFileSync(path.join(cwd, "tyxtest/billing/.index.json")), billingBefore);
+  assert.deepEqual(readIndex(path.join(cwd, "tyxtest/billing/.index.json")), billingBefore);
   assert.equal(fs.existsSync(path.join(cwd, "tyxtest/.pending.json")), false);
   assert.ok(logs.includes("indexed login"));
 });
@@ -554,6 +572,22 @@ test("index --fix reindexes every surface even when a surface filter is given", 
   assert.deepEqual(seen.sort(), ["billing", "login"]);
 });
 
+test("index clears deleted final claims without calling the model", async () => {
+  const cwd = tempDir("tyxtest-index-empty-");
+  writeLogin(cwd, "export function SubmitButton() { return 'submit'; }\n");
+  fs.writeFileSync(path.join(cwd, "tyxtest/login/surface.md"), "---\nentry: src/login.ts\n---\n# Login\n");
+  let calls = 0;
+  await indexCommand({
+    cwd, prompter: scriptedPrompter([]), interactive: true, config: config(),
+    model: { async complete() { calls += 1; throw new Error("model should not run for a surface without claims"); } },
+  });
+  assert.equal(calls, 0);
+  const index = readIndexes(cwd).get("login");
+  assert.ok(index);
+  assert.deepEqual(index.tests, undefined);
+  assert.deepEqual(index.flows, undefined);
+});
+
 test("generate asks one batched prompt up to maxQuestions and flags the overflow", async () => {
   const cwd = tempDir("tyxtest-questions-");
   fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
@@ -586,7 +620,8 @@ test("generate asks one batched prompt up to maxQuestions and flags the overflow
           ],
         });
       }
-      return JSON.stringify({ files: [{ path: "src/login.ts", symbols: ["LoginForm"] }], notes: [] });
+      return JSON.stringify({ tests: [{ testId: readTests(fs.readFileSync(path.join(cwd, "tyxtest/login/surface.md"), "utf8"), config().markdown)[0]!.id,
+        chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }], notes: [] });
     },
   };
   await generateCommand({
@@ -620,7 +655,8 @@ test("generate uses a nonblank batched answer to revise the proposal", async () 
           ? JSON.stringify({ surfaces: [{ slug: "login", name: "Login", entry: "src/login.ts", tests: [{ text: "Uses login" }] }], questions: [{ prompt: "Which auth flow?", guess: "login" }] })
           : JSON.stringify({ surfaces: [{ slug: "password-reset", name: "Password reset", entry: "src/auth.ts", tests: [{ text: "Starts a password reset" }] }], questions: [] });
       }
-      return JSON.stringify({ files: [{ path: "src/auth.ts", symbols: ["Auth"] }], notes: [] });
+      return JSON.stringify({ tests: [{ testId: readTests(fs.readFileSync(path.join(cwd, "tyxtest/password-reset/surface.md"), "utf8"), config().markdown)[0]!.id,
+        chunks: [{ path: "src/auth.ts", symbol: "Auth" }] }], notes: [] });
     },
   };
   await generateCommand({ cwd, model, prompter: scriptedPrompter(["The password reset flow", "accept"]), interactive: true, config: config(), env: {} });
@@ -657,7 +693,8 @@ test("maxQuestions 0 never asks the question prompt", async () => {
           questions: [{ prompt: "Which file is the login form?", guess: "src/login.ts" }],
         });
       }
-      return JSON.stringify({ files: [{ path: "src/login.ts", symbols: ["LoginForm"] }], notes: [] });
+      return JSON.stringify({ tests: [{ testId: readTests(fs.readFileSync(path.join(cwd, "tyxtest/login/surface.md"), "utf8"), config().markdown)[0]!.id,
+        chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }], notes: [] });
     },
   };
   await generateCommand({

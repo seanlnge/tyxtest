@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { hashContent } from "../util/hash.js";
 import { isInsideNodeModules, normalizeRel, relativePosix } from "../util/paths.js";
+import { listSourceFiles } from "./repo-files.js";
 
 const require = createRequire(import.meta.url);
 const ts = require("typescript") as typeof import("typescript");
@@ -66,25 +67,28 @@ export function collectClosure(options: {
   return { files, closureHash: hashClosure(files) };
 }
 
-export function computeSurfaceClosure(options: {
+export function collectTestContext(options: {
   cwd: string;
-  entry: string;
-  depth: number | null;
-  parentClosure: Array<{ path: string }> | null;
+  chunks: Array<{ path: string; symbol: string }>;
+  context?: string[];
+  previous?: Array<{ path: string }>;
 }): { files: ClosureFile[]; closureHash: string } {
-  const collected = collectClosure({
-    cwd: options.cwd,
-    entries: [options.entry],
-    depth: options.depth,
-  });
-  if (!options.parentClosure) return collected;
-
-  const allowed = new Set(options.parentClosure.map((file) => normalizeRel(file.path)));
-  const entry = normalizeRel(options.entry);
-  if (!allowed.has(entry)) {
-    throw new Error(`Entry ${entry} is outside the parent surface closure.`);
+  const inventory = new Set(listSourceFiles(options.cwd));
+  const rootDir = path.resolve(options.cwd);
+  const safe = (value: string): string | null => {
+    const normalized = normalizeRel(value);
+    const absolute = path.resolve(options.cwd, normalized);
+    if (!normalized || !inventory.has(normalized) || !absolute.startsWith(`${rootDir}${path.sep}`)) return null;
+    return normalized;
+  };
+  const roots = new Set<string>();
+  for (const item of [...options.chunks, ...(options.context ?? []).map((item) => ({ path: item, symbol: "" }))]) {
+    const file = safe(item.path);
+    if (file) roots.add(file);
   }
-  const files = collected.files.filter((file) => allowed.has(file.path));
+  // Previous snapshots and dependency graphs never authorize model input.
+  const files = [...roots].map((relative) => ({ path: relative, hash: hashContent(fs.readFileSync(path.resolve(options.cwd, relative))) }))
+    .sort((a, b) => a.path.localeCompare(b.path));
   return { files, closureHash: hashClosure(files) };
 }
 

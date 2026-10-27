@@ -3,9 +3,9 @@ import path from "node:path";
 import { defaultApiKeyEnv, parseConfig } from "../config/config.js";
 import { writeText } from "../util/fs-util.js";
 import { generateCommand } from "./generate.js";
-import { ensureEnvGitignore, ensureIndexMergeAttributes, ensureOursMergeDriver } from "../git/git-files.js";
+import { ensureEnvGitignore, ensureIndexMergeAttributes } from "../git/git-files.js";
 import type { Prompter } from "./prompter.js";
-import type { ModelConfig, ModelKind } from "../config/types.js";
+import type { MarkdownConfig, ModelConfig, ModelKind } from "../config/types.js";
 
 const PROVIDERS = new Set(["anthropic", "openai", "ollama", "typesafe", "laya"]);
 
@@ -19,8 +19,6 @@ export async function setupCommand(options: {
   const index = await askModel(options.prompter, env, "index", "TYXTEST_INDEX_KEY", undefined);
   const runner = await askRunner(options.prompter, env);
   const escalateModel = await askOptionalModel(options.prompter, env);
-  const entryAnswer = await options.prompter.ask("Entry mode (ask-plain, ask-entry, required) [ask-plain]:");
-  const entryMode = entryAnswer.trim() || "ask-plain";
   const generateAnswer = await options.prompter.ask("Generate tests now? (yes/no) [no]:");
 
   const config = parseConfig({
@@ -36,13 +34,12 @@ export async function setupCommand(options: {
     maxQuestions: 5,
     chunkMaxTokens: 4000,
     concurrency: 8,
-    entryMode,
     nonInteractive: "fail",
     reruns: 2,
     verdictRule: "worst",
     unsureBlocks: false,
-    closureDepth: null,
     guards: { literalKeyCheck: true, gitignoreEnv: true },
+    markdown: { testDiscovery: { mode: "headings", headingLevel: 2, prefix: null } },
   });
   writeText(
     path.join(options.cwd, "tyxtest", "tyxtest.config.json"),
@@ -50,7 +47,6 @@ export async function setupCommand(options: {
   );
   if (config.guards.gitignoreEnv) ensureEnvGitignore(options.cwd);
   ensureIndexMergeAttributes(options.cwd);
-  ensureOursMergeDriver(options.cwd);
   options.prompter.log("Wrote tyxtest/tyxtest.config.json, .gitignore, and .gitattributes.");
 
   if (isYes(generateAnswer)) {
@@ -142,7 +138,7 @@ function renderConfig(config: {
   indexModel?: ModelConfig;
   runnerModel?: ModelConfig;
   escalateModel?: ModelConfig;
-  entryMode: string;
+  markdown?: MarkdownConfig;
 }): string {
   return `${JSON.stringify(
     {
@@ -154,7 +150,6 @@ function renderConfig(config: {
       thresholds: { pass: 0.9, fail: 0.1 },
       ignoreUnchanged: false,
       baseRef: "origin/main",
-      entryMode: config.entryMode,
       nonInteractive: "fail",
       reruns: 2,
       verdictRule: "worst",
@@ -164,8 +159,8 @@ function renderConfig(config: {
       maxQuestions: 5,
       chunkMaxTokens: 4000,
       concurrency: 8,
-      closureDepth: null,
       guards: { literalKeyCheck: true, gitignoreEnv: true },
+      markdown: config.markdown ?? { testDiscovery: { mode: "headings", headingLevel: 2, prefix: null } },
     },
     null,
     2,

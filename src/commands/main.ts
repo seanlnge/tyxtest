@@ -15,10 +15,10 @@ Usage:
   tyxtest run [-A] [--non-interactive] [--verbose] [--cached] [surface...]
   tyxtest <command> --help
 
-setup     write tyxtest/tyxtest.config.json, ignore .env, mark .index.json merge=ours
+setup     write tyxtest/tyxtest.config.json, ignore .env, enable line-based index merging
 generate  propose the first surface tree when tyxtest/ has no surfaces
-index     map each surface onto its import closure and write .index.json. --pending applies suggestions; --fix reindexes all surfaces
-run       judge each test on its fresh import closure, with indexed evidence. Jev retries every non-pass; uncertain aggregates escalate once. The escalation model does not rerun.
+index     map each test to repository-wide chunks and context; write .index.json. --pending applies suggestions; --fix reindexes all surfaces
+run       judge each test on its own fresh source context, with indexed evidence. Jev retries every non-pass; uncertain aggregates escalate once. The escalation model does not rerun.
 
 Config lives in tyxtest/tyxtest.config.json and names env vars. It must not contain API keys.
 `;
@@ -26,19 +26,20 @@ Config lives in tyxtest/tyxtest.config.json and names env vars. It must not cont
 const COMMAND_HELP: Record<string, string> = {
   setup: `tyxtest setup
 
-Write tyxtest/tyxtest.config.json, add .env, .tyxtest/, and tyxtest/.pending.json to .gitignore, and mark tyxtest/**/.index.json merge=ours.
+Write tyxtest/tyxtest.config.json, add .env, .tyxtest/, and tyxtest/.pending.json to .gitignore, and remove the old index merge=ours rule for normal line-based merging.
 
 Asks for the index model, the runner model, and whether to generate the first surfaces. The config stores env var names, not API keys.
 `,
   generate: `tyxtest generate [--yes]
 
 Propose the first surface tree when tyxtest/ has no surfaces. Refuses to run once any surface exists.
+Writes an H1 surface title, description, and H2 test sections with rich Markdown bodies by default. markdown.testDiscovery configures the mode, headingLevel, and optional literal prefix. Generated labels include the configured prefix automatically.
 
   --yes   accept the proposal without prompting
 `,
   index: `tyxtest index [--pending | --fix] [surface...]
 
-Map each selected surface onto its import closure and write .index.json.
+Map each test in the selected surfaces to chunks and source context across the repository, and write the shared tyxtest/.index.json with compact single-line records. Nested surface titles, descriptions, and ancestor claims provide product context, not file restrictions. No entry file is required.
 
   --pending     reindex only surfaces listed in tyxtest/.pending.json
   --fix         reindex every surface, ignoring surface filters
@@ -46,7 +47,7 @@ Map each selected surface onto its import closure and write .index.json.
 `,
   run: `tyxtest run [-A] [--non-interactive] [--verbose] [--cached] [surface...]
 
-Judge each test against its fresh import closure, including callers and dependencies outside the indexed evidence symbols. Indexed chunks select evidence, not the complete verdict context. Jev scores the claim and its evidence in one request. Every non-pass is retried up to reruns more times (default 2, three attempts), stopping early on pass. Attempts combine using verdictRule (default worst); an unsure aggregate escalates once. The escalation model does not rerun; its single verdict is the test result. An LLM also runs once when the decision API fails or when runnerModel.kind is llm. Runs do not write .index.json.
+Judge each test against its own fresh source context, including callers and dependencies around its indexed chunks. Indexed chunks select evidence, not the complete verdict context. Product-surface nesting supplies semantic context and never restricts source files. Jev scores the claim and its evidence in one request. Every non-pass is retried up to reruns more times (default 2, three attempts), stopping early on pass. Attempts combine using verdictRule (default worst); an unsure aggregate escalates once. The escalation model does not rerun; its single verdict is the test result. An LLM also runs once when the decision API fails or when runnerModel.kind is llm. Runs do not write .index.json.
 
   -A, --all           judge every test, ignoring the cache and unchanged skips
   --non-interactive   do not prompt
@@ -55,6 +56,7 @@ Judge each test against its fresh import closure, including callers and dependen
   surface...          limit the run to these surface paths
 
 Cached tests are hidden unless --cached is set or showCached is true in tyxtest.config.json.
+Surface H1 titles appear in a nested directory tree. By default each H2 section is a test, including its complete Markdown body. Deeper headings, lists, and code blocks stay inside that test. Tests show their headings without internal hash IDs or discovery prefixes. Set markdown.testDiscovery.mode to bullets for bullet specs, markdown.testDiscovery.headingLevel to 2 through 6 for another heading depth, or markdown.testDiscovery.prefix to a literal, case-sensitive filter such as Test:. Nonmatching peer headings still end tests. The footer includes total time and provider-reported runner/fallback token usage.
 fallback (default true) sends a test to the escalation model when the decision API fails. The escalation model defaults to the index model. The report notes that fallback at the end.
 `,
 };

@@ -1,2 +1,0 @@
-# tyxtest index files merge like a lockfile
-tyxtest/**/.index.json merge=ours

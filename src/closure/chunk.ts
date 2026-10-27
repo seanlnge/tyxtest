@@ -17,6 +17,9 @@ export interface CodeChunk {
   kind: "function" | "component" | "class" | "constant";
   line: number;
   endLine: number;
+  /** Source span rendered for a split focus chunk. */
+  sourceLine?: number;
+  sourceEndLine?: number;
   text: string;
 }
 
@@ -69,9 +72,10 @@ export function chunkSource(
   text: string,
   maxTokens = 4000,
   files?: Map<string, string>,
+  includeBindings = true,
 ): CodeChunk[] {
   const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKind(filePath));
-  const bindings = collectBindings(source, filePath, files);
+  const bindings = includeBindings ? collectBindings(source, filePath, files) : new Map<string, string>();
   const chunks: CodeChunk[] = [];
   let needsFileContext = false;
   for (const statement of source.statements) {
@@ -137,8 +141,19 @@ function emitChunk(
   // initialization. Retain the full context even when it exceeds the size cap.
   return inner.map((child, index) => {
     const childName = statementName(child) ?? `${name}#${index + 1}`;
-    return { ...toChunk(source, filePath, child, childName, symbol, bindings), kind: chunk.kind, text: chunk.text };
+    return { ...toChunk(source, filePath, child, childName, symbol, bindings), kind: chunk.kind, text: chunk.text, sourceLine: chunk.line, sourceEndLine: chunk.endLine };
   });
+}
+
+/** Exact selectable declarations and legacy focus aliases, without inferred dependencies. */
+export function indexableSymbols(filePath: string, text: string, maxTokens = 4000): Array<{ symbol: string; chars: number; line: number; endLine: number; fileContext: boolean }> {
+  const symbols = new Map<string, { symbol: string; chars: number; line: number; endLine: number; fileContext: boolean }>();
+  for (const chunk of [...chunkSource(filePath, text, Infinity, undefined, false), ...chunkSource(filePath, text, maxTokens, undefined, false)]) {
+    if (!chunk.text.trim() || symbols.has(chunk.name)) continue;
+    symbols.set(chunk.name, { symbol: chunk.name, chars: chunk.text.length, line: chunk.sourceLine ?? chunk.line,
+      endLine: chunk.sourceEndLine ?? chunk.endLine, fileContext: chunk.name === path.basename(filePath) });
+  }
+  return [...symbols.values()];
 }
 
 function statementName(node: import("typescript").Node): string | undefined {

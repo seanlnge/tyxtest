@@ -10,8 +10,8 @@ import { normalizeRel } from "../util/paths.js";
 import type { Prompter } from "./prompter.js";
 import { createModelClient } from "../model/providers.js";
 import { listSourceFiles, readFileBundle, routerFiles } from "../closure/repo-files.js";
-import { backfillTestIds, writeSurface } from "../surface/surface.js";
-import type { ModelClient, ModelRequest, ModelSource, TyxtestConfig } from "../config/types.js";
+import { readTests, writeSurface } from "../surface/surface.js";
+import type { MarkdownConfig, ModelClient, ModelRequest, ModelSource, TyxtestConfig } from "../config/types.js";
 
 interface GenerateQuestion {
   prompt: string;
@@ -22,8 +22,7 @@ interface ProposedSurface {
   slug?: string;
   name?: string;
   description?: string;
-  entry?: string;
-  tests?: Array<{ id?: string; text?: string }>;
+  tests?: Array<{ id?: string; text?: string; body?: string; notes?: string }>;
   children?: ProposedSurface[];
 }
 
@@ -31,8 +30,7 @@ interface FlatSurface {
   relativeDir: string;
   name: string;
   description: string;
-  entry: string;
-  tests: Array<{ id?: string; text: string }>;
+  tests: Array<{ id?: string; text: string; body: string }>;
 }
 
 export async function generateCommand(options: {
@@ -60,15 +58,16 @@ export async function generateCommand(options: {
   const model = resolveModel(options.model, () => createModelClient(requireModels(config).indexModel, env));
   const files = listSourceFiles(options.cwd);
   const routes = routerFiles(files);
-  const bundle = readFileBundle(options.cwd, (routes.length > 0 ? routes : files).slice(0, 20), 40_000);
+  const bundle = readFileBundle(options.cwd, (routes.length > 0 ? routes : files).slice(0, 20), Infinity);
   const request: ModelRequest = {
     purpose: "generate",
     system: [
       "You propose a product surface tree from what this software does for its users.",
       "For a web app, surfaces are screens. For a CLI, commands. For a library, its public API. For a server, its endpoints.",
-      'Reply with JSON only: {"surfaces":[{"slug":"login-page","name":"Login page","description":"...","entry":"src/pages/login.tsx","tests":[{"id":"submit-exists","text":"There is a submit button"}],"children":[]}],"questions":[{"prompt":"Which component is the login form?","guess":"src/pages/login.tsx"}]}',
-      "Ask questions only when a mapping or the intended behavior is ambiguous. Otherwise return an empty questions array.",
-      "Every surface needs an entry path that exists in the file list and at least one test.",
+      'Reply with JSON only: {"surfaces":[{"slug":"login-page","name":"Login page","description":"...","tests":[{"text":"Submit button availability","body":"The button is enabled only when the form is valid.\\n\\n- Invalid credentials show an error."}],"children":[]}],"questions":[{"prompt":"Which form behavior is important?","guess":"..."}]}',
+      `Each test's text is a short, single-line heading without a discovery prefix; the renderer adds the configured prefix ${JSON.stringify(config.markdown.testDiscovery.prefix)}. Its body is raw Markdown prose and may contain paragraphs, nested lists, and fenced code blocks. Do not put headings at or above level ${config.markdown.testDiscovery.headingLevel} in a test body.`,
+      "Ask questions only when intended behavior is ambiguous. Otherwise return an empty questions array.",
+      "Each surface describes user-visible behavior and contains one or more tests. Surfaces may cover arbitrary files; do not scope them to a single entry file.",
     ].join(" "),
     prompt: `${readProjectBrief(options.cwd)}\n\nSource files:\n${files.join("\n") || "(none)"}\n\nSample source:\n${bundle || "(none)"}`,
   };
@@ -105,17 +104,12 @@ export async function generateCommand(options: {
       throw new Error(`Proposed surfaces collide at normalized path "${surface.relativeDir}". Rename or remove the conflicting surfaces before accepting.`);
     }
     destinations.add(normalizedDir);
-    if (!surface.entry) throw new Error(`Proposed surface "${surface.relativeDir}" has no entry file.`);
-    if (!fs.existsSync(path.join(options.cwd, surface.entry))) {
-      throw new Error(`Entry file not found: ${surface.entry}`);
-    }
-    if (!fs.statSync(path.join(options.cwd, surface.entry)).isFile()) {
-      throw new Error(`Entry must be a file: ${surface.entry}`);
-    }
   }
   for (const surface of accepted) {
-    const filled = backfillTestIds(renderSurface(surface));
-    writeSurface(path.join(options.cwd, "tyxtest", surface.relativeDir, "surface.md"), filled.markdown);
+    validateSurface(surface, config.markdown);
+  }
+  for (const surface of accepted) {
+    writeSurface(path.join(options.cwd, "tyxtest", surface.relativeDir, "surface.md"), renderSurface(surface, config.markdown));
   }
   options.prompter.log(`wrote ${accepted.length} surface${accepted.length === 1 ? "" : "s"}`);
   await indexCommand({
@@ -164,7 +158,7 @@ async function confirmTree(prompter: Prompter, surfaces: FlatSurface[], yes: boo
           await prompter.ask(`Test ${test.id ? `[${test.id}] ` : ""}${test.text} (enter to keep, drop, or new text):`)
         ).trim();
         if (next.toLowerCase() === "drop") continue;
-        tests.push({ id: test.id, text: next || test.text });
+        tests.push({ id: test.id, text: next || test.text, body: test.body });
       }
       kept.push({ ...surface, tests });
     }
@@ -233,10 +227,14 @@ function flatten(nodes: ProposedSurface[], parent = ""): FlatSurface[] {
       relativeDir,
       name,
       description: node.description?.trim() || "",
-      entry: node.entry ? normalizeRel(node.entry) : "",
       tests: (node.tests ?? []).flatMap((test) => {
         if (typeof test.text !== "string" || test.text.trim() === "") return [];
-        return [{ id: typeof test.id === "string" ? test.id.trim() : undefined, text: test.text.trim() }];
+        return [{
+          id: typeof test.id === "string" ? test.id.trim() : undefined,
+          text: test.text.trim(),
+          body: (typeof test.body === "string" ? test.body : typeof test.notes === "string" ? test.notes : "")
+            .replace(/\r\n/g, "\n").replace(/^(?:[ \t]*\n)+|(?:\n[ \t]*)+$/g, ""),
+        }];
       }),
     });
     if (node.children?.length) flat.push(...flatten(node.children, relativeDir));
@@ -253,17 +251,40 @@ function slugPart(value: string): string {
   return slug || "surface";
 }
 
-function renderSurface(surface: FlatSurface): string {
-  const lines = ["---", `surface: ${surface.name}`];
-  if (surface.description) lines.push(`description: ${surface.description}`);
-  if (surface.entry) lines.push(`entry: ${surface.entry}`);
-  lines.push("---", "");
+function renderSurface(surface: FlatSurface, markdown: MarkdownConfig): string {
+  const discovery = markdown.testDiscovery;
+  const lines = [`# ${surface.name}`, ""];
+  if (surface.description) lines.push(surface.description, "");
   for (const test of surface.tests) {
-    const id = test.id && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(test.id) ? test.id : "";
-    lines.push(id ? `- [${id}] ${test.text}` : `- ${test.text}`);
+    const prefix = discovery.prefix;
+    const title = prefix !== null && test.text.startsWith(prefix) ? test.text.slice(prefix.length).trim() : test.text;
+    const label = prefix === null ? title : `${prefix.replace(/[\\`*_[\]{}()#+.!<>|~&-]/g, "\\$&")}${/\s$/.test(prefix) ? "" : " "}${title}`;
+    if (discovery.mode === "bullets") {
+      lines.push(`- ${label}`);
+      if (test.body) lines.push(...test.body.split(/\r?\n/).map((line) => `  ${line}`));
+    } else {
+      lines.push(`${"#".repeat(discovery.headingLevel)} ${label}`, "");
+      if (test.body) lines.push(test.body, "");
+    }
   }
   lines.push("");
   return lines.join("\n");
+}
+
+function validateSurface(surface: FlatSurface, markdown: MarkdownConfig): void {
+  if (!surface.name.trim() || /[\r\n]/.test(surface.name)) {
+    throw new Error(`Surface title in "${surface.relativeDir}" must be a non-empty single line.`);
+  }
+  for (const test of surface.tests) {
+    if (!test.text.trim() || /[\r\n]/.test(test.text)) {
+      throw new Error(`Test heading in "${surface.relativeDir}" must be a non-empty single line.`);
+    }
+  }
+  const rendered = renderSurface(surface, markdown);
+  const parsed = readTests(rendered, markdown);
+  if (parsed.length !== surface.tests.length || parsed.some((test, index) => (test.notes ?? "") !== surface.tests[index]!.body)) {
+    throw new Error(`Rendered body in "${surface.relativeDir}" contains a heading boundary or changes the proposed tests; refusing to write surfaces.`);
+  }
 }
 
 function formatTree(surfaces: FlatSurface[]): string {
@@ -271,7 +292,6 @@ function formatTree(surfaces: FlatSurface[]): string {
   for (const surface of surfaces) {
     const pad = "  ".repeat(surface.relativeDir.split("/").length - 1);
     lines.push(`${pad}${surface.relativeDir} — ${surface.name}`);
-    if (surface.entry) lines.push(`${pad}  entry: ${surface.entry}`);
     for (const test of surface.tests) {
       lines.push(`${pad}  - ${test.id ? `[${test.id}] ` : ""}${test.text}`);
     }

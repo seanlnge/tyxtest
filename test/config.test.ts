@@ -8,13 +8,12 @@ import { tempDir } from "./helpers.js";
 
 test("config defaults", () => {
   const config = parseConfig({});
-  assert.equal(config.entryMode, "ask-plain");
+  assert.deepEqual(config.markdown, { testDiscovery: { mode: "headings", headingLevel: 2, prefix: null } });
   assert.equal(config.nonInteractive, "fail");
   assert.equal(config.reruns, 2);
   assert.equal(config.verdictRule, "worst");
   assert.equal(config.unsureBlocks, false);
   assert.equal(config.showCached, false);
-  assert.equal(config.closureDepth, null);
   assert.equal(config.escalate, true);
   assert.equal(config.escalateModel, undefined);
   assert.equal(config.fallback, true);
@@ -33,20 +32,18 @@ test("config defaults", () => {
 
 test("config keeps explicit values and fills the other guard", () => {
   const config = parseConfig({
-    entryMode: "required",
     nonInteractive: "search",
     reruns: 0,
     unsureBlocks: true,
+    entryMode: "required",
     closureDepth: 0,
     guards: { literalKeyCheck: false },
     indexModel: { provider: "anthropic", model: "claude", apiKeyEnv: "TYXTEST_INDEX_KEY" },
     runnerModel: { provider: "openai", model: "gpt" },
   });
-  assert.equal(config.entryMode, "required");
   assert.equal(config.nonInteractive, "search");
   assert.equal(config.reruns, 0);
   assert.equal(config.unsureBlocks, true);
-  assert.equal(config.closureDepth, 0);
   assert.equal(config.guards.literalKeyCheck, false);
   assert.equal(config.guards.gitignoreEnv, true);
   assert.equal(config.indexModel?.apiKeyEnv, "TYXTEST_INDEX_KEY");
@@ -86,13 +83,25 @@ test("config allows env var names and disables the literal-key guard", () => {
   );
 });
 
-test("config rejects invalid enums and non-integers", () => {
-  assert.throws(() => parseConfig({ entryMode: "guess" }), /entryMode/);
+test("config ignores removed entry and closure settings and rejects invalid active values", () => {
+  assert.equal("entryMode" in parseConfig({ entryMode: "guess" }), false);
+  assert.equal("closureDepth" in parseConfig({ closureDepth: -1 }), false);
   assert.throws(() => parseConfig({ reruns: 1.5 }), /reruns/);
-  assert.throws(() => parseConfig({ closureDepth: -1 }), /closureDepth/);
   assert.equal(parseConfig({ verdictRule: "majority" }).verdictRule, "majority");
   assert.equal(parseConfig({ verdictRule: "best" }).verdictRule, "best");
   assert.throws(() => parseConfig({ verdictRule: "random" }), /verdictRule/);
+});
+
+test("Markdown config validates explicit bullet mode and heading depth", () => {
+  const expected = { testDiscovery: { mode: "bullets", headingLevel: 4, prefix: null } };
+  assert.deepEqual(parseConfig({ markdown: expected }).markdown, expected);
+  assert.deepEqual(parseConfig({ markdown: { tests: "bullets", testHeadingLevel: 4 } }).markdown, expected);
+  assert.throws(() => parseConfig({ markdown: { testDiscovery: { mode: "automatic" } } }), /testDiscovery.mode/);
+  assert.throws(() => parseConfig({ markdown: { testDiscovery: { headingLevel: 1 } } }), /between 2 and 6/);
+  assert.throws(() => parseConfig({ markdown: { testDiscovery: null } }), /testDiscovery must be an object/);
+  assert.throws(() => parseConfig({ markdown: { tests: "bullets", testDiscovery: {} } }), /cannot mix/);
+  for (const prefix of ["", "  ", "one\ntwo", 4]) assert.throws(() => parseConfig({ markdown: { testDiscovery: { prefix } } }), /prefix/);
+  assert.equal(parseConfig({ markdown: { testDiscovery: { prefix: "Claim  " } } }).markdown.testDiscovery.prefix, "Claim  ");
 });
 
 test("default API key env vars", () => {
@@ -113,7 +122,7 @@ test("loadConfig reads a file and rejects a stored key", () => {
       runnerModel: { provider: "ollama", model: "llama" },
     }),
   );
-  assert.equal(loadConfig(cwd).entryMode, "ask-plain");
+  assert.equal(loadConfig(cwd).nonInteractive, "fail");
   fs.writeFileSync(file, JSON.stringify({ token: "sk-abcdef1234567890" }));
   assert.throws(() => loadConfig(cwd), /literal API key/);
 });

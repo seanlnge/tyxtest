@@ -1,10 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { ModelConfig, ModelKind, Thresholds, TyxtestConfig } from "./types.js";
+import type { MarkdownConfig, ModelConfig, ModelKind, Thresholds, TyxtestConfig } from "./types.js";
 
 const LITERAL_KEY = /sk-[A-Za-z0-9_-]{8,}/;
-const ENTRY_MODES = ["ask-plain", "ask-entry", "required"] as const;
 const NON_INTERACTIVE = ["fail", "search"] as const;
 
 export function configPath(cwd: string): string {
@@ -100,6 +99,7 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
 
   return {
     indexModel: pickModel(raw.indexModel, "indexModel"),
+    markdown: pickMarkdown(raw.markdown),
     runnerModel: pickModel(raw.runnerModel, "runnerModel", "decision"),
     escalate: pickBoolean(raw.escalate, true, "escalate"),
     escalateModel: pickModel(raw.escalateModel, "escalateModel"),
@@ -107,7 +107,6 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     thresholds: pickThresholds(raw.thresholds),
     ignoreUnchanged: pickBoolean(raw.ignoreUnchanged, false, "ignoreUnchanged"),
     baseRef: pickBaseRef(raw.baseRef),
-    entryMode: pickEnum(raw.entryMode, ENTRY_MODES, "ask-plain", "entryMode"),
     nonInteractive: pickEnum(raw.nonInteractive, NON_INTERACTIVE, "fail", "nonInteractive"),
     reruns: pickReruns(raw.reruns),
     verdictRule: pickVerdictRule(raw.verdictRule),
@@ -115,7 +114,6 @@ function applyDefaults(raw: Record<string, unknown>): TyxtestConfig {
     showCached: pickBoolean(raw.showCached, false, "showCached"),
     triage: pickBoolean(raw.triage, false, "triage"),
     relocateCheck: pickBoolean(raw.relocateCheck, true, "relocateCheck"),
-    closureDepth: pickDepth(raw.closureDepth),
     maxQuestions: pickInteger(raw.maxQuestions, 5, "maxQuestions", 0),
     chunkMaxTokens: pickInteger(raw.chunkMaxTokens, 4000, "chunkMaxTokens", 1),
     concurrency: pickInteger(raw.concurrency, 8, "concurrency", 1),
@@ -211,18 +209,36 @@ function pickVerdictRule(value: unknown): TyxtestConfig["verdictRule"] {
   return picked;
 }
 
+function pickMarkdown(value: unknown): MarkdownConfig {
+  if (value === undefined) return { testDiscovery: { mode: "headings", headingLevel: 2, prefix: null } };
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("markdown must be an object.");
+  const record = value as Record<string, unknown>;
+  const hasLegacy = "tests" in record || "testHeadingLevel" in record;
+  const hasCanonical = "testDiscovery" in record;
+  if (hasLegacy && hasCanonical) throw new Error("markdown cannot mix legacy keys with testDiscovery.");
+  const discovery = hasCanonical ? record.testDiscovery : hasLegacy ? record : {};
+  if (!discovery || typeof discovery !== "object" || Array.isArray(discovery)) {
+    throw new Error("markdown.testDiscovery must be an object.");
+  }
+  const nested = discovery as Record<string, unknown>;
+  const modeValue = hasLegacy ? nested.tests : nested.mode;
+  const tests = pickEnum(modeValue, ["headings", "bullets"] as const, "headings", "markdown.testDiscovery.mode");
+  const levelValue = hasLegacy ? nested.testHeadingLevel : nested.headingLevel;
+  const level = levelValue === undefined ? 2 : levelValue;
+  if (typeof level !== "number" || !Number.isInteger(level) || level < 2 || level > 6) {
+    throw new Error("markdown.testDiscovery.headingLevel must be an integer between 2 and 6.");
+  }
+  const prefix = nested.prefix === undefined ? null : nested.prefix;
+  if (prefix !== null && (typeof prefix !== "string" || !prefix.trim() || /[\r\n]/.test(prefix))) {
+    throw new Error("markdown.testDiscovery.prefix must be null or a nonblank single-line string.");
+  }
+  return { testDiscovery: { mode: tests, headingLevel: level as MarkdownConfig["testDiscovery"]["headingLevel"], prefix: prefix as string | null } };
+}
+
 function pickBoolean(value: unknown, fallback: boolean, label: string): boolean {
   const picked = value === undefined ? fallback : value;
   if (typeof picked !== "boolean") throw new Error(`${label} must be true or false.`);
   return picked;
-}
-
-function pickDepth(value: unknown): number | null {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new Error("closureDepth must be a non-negative integer or null.");
-  }
-  return value;
 }
 
 export function resolveApiKeyName(model: ModelConfig): string | undefined {

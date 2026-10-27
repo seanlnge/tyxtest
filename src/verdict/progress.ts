@@ -1,5 +1,5 @@
 import { aggregateFindings, fallbackLines, summaryLines, type ReportedTest } from "./reporter.js";
-import type { Verdict } from "../config/types.js";
+import type { ModelUsage, Verdict } from "../config/types.js";
 
 const ELLIPSIS = "\u2026";
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -16,6 +16,7 @@ export interface ProgressSink {
 
 export interface ProgressRow {
   surface: string;
+  surfaceTitle?: string;
   id: string;
   text: string;
 }
@@ -29,7 +30,7 @@ interface PaintedRow extends ProgressRow {
 export interface RunProgress {
   complete(result: ReportedTest, durationMs: number): void;
   note(message: string): void;
-  finish(results: ReportedTest[], options: { unsureBlocks: boolean; verbose: boolean }): void;
+  finish(results: ReportedTest[], options: { unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage }): void;
   dispose(): void;
 }
 
@@ -52,7 +53,7 @@ export function createRunProgress(
   let timer: ReturnType<typeof setInterval> | undefined;
   const columns = sink.columns && sink.columns > 0 ? sink.columns : 80;
 
-  const paint = (final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean } | null): void => {
+  const paint = (final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage } | null): void => {
     const lines = renderLines(painted, {
       frame: SPINNER[frame % SPINNER.length] ?? "⠋",
       color,
@@ -98,7 +99,7 @@ export function createRunProgress(
       sink.write(`${message}\n`);
       paint(null);
     },
-    finish(results: ReportedTest[], finishOptions: { unsureBlocks: boolean; verbose: boolean }): void {
+    finish(results: ReportedTest[], finishOptions: { unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage }): void {
       if (stopped) return;
       if (timer) clearInterval(timer);
       timer = undefined;
@@ -111,7 +112,7 @@ export function createRunProgress(
           row.cached = result.cached;
           row.durationMs = 0;
         }
-        paint({ results, unsureBlocks: finishOptions.unsureBlocks, verbose: finishOptions.verbose });
+        paint({ results, ...finishOptions });
       } finally {
         this.dispose();
       }
@@ -131,26 +132,35 @@ function renderLines(
     frame: string;
     color: boolean;
     columns: number;
-    final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean } | null;
+    final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage } | null;
   },
 ): string[] {
   const lines: string[] = [];
   let surface = "";
+  let headings: string[] = [];
   for (const row of rows) {
     if (row.surface !== surface) {
-      if (lines.length > 0) lines.push("");
-      lines.push(fit(row.surface, "", "", options.columns));
+      const keys = row.surface.split("/");
+      const names = (row.surfaceTitle ?? row.surface).split("\0");
+      let common = 0;
+      while (common < keys.length && headings[common] === keys[common]) common += 1;
+      headings = headings.slice(0, common);
+      for (let index = common; index < keys.length; index += 1) {
+        if (lines.length > 0 && index === 0) lines.push("");
+        lines.push(fit(`${"  ".repeat(index)}${names[index] ?? keys[index]}/`, "", "", options.columns));
+        headings.push(keys[index]!);
+      }
       surface = row.surface;
     }
     const tail =
       row.verdict === undefined
         ? `  ${options.frame}`
         : `  ${paintVerdict(row.verdict, options.color)}${row.cached ? " (cached)" : ""}  ${paintTime(row.durationMs ?? 0, options.color)}`;
-    lines.push(fit(`  [${row.id}] `, row.text, tail, options.columns));
+     lines.push(fit(`${"  ".repeat(headings.length)}- `, row.text, tail, options.columns));
   }
   if (options.final) {
     if (lines.length > 0) lines.push("");
-    lines.push(...summaryLines(options.final.results, options.final.unsureBlocks));
+    lines.push(...summaryLines(options.final.results, options.final.unsureBlocks, { ...options.final, color: options.color }));
     const findings = aggregateFindings(options.final.results, options.final.verbose);
     if (findings.length > 0) {
       lines.push("");

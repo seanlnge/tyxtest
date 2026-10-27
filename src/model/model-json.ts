@@ -1,6 +1,6 @@
 export function parseModelJson(text: string): unknown {
   const trimmed = text.trim();
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```[ \t]*$/i.exec(trimmed);
   const body = (fenced?.[1] ?? trimmed).trim();
   const start = body.indexOf("{");
   const end = body.lastIndexOf("}");

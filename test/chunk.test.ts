@@ -3,10 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { chunkClosure, chunkSource, estimateTokens, evidenceForChunks, evidenceIdentity, selectChunks } from "../src/closure/chunk.js";
+import { chunkClosure, chunkSource, estimateTokens, evidenceForChunks, evidenceIdentity, indexableSymbols, selectChunks } from "../src/closure/chunk.js";
+import { collectIndexedEvidence } from "../src/closure/indexed-evidence.js";
 import { indexCommand } from "../src/commands/index-command.js";
 import { parseConfig } from "../src/config/config.js";
 import { readIndex } from "../src/surface/index-file.js";
+import { testIdFor } from "../src/surface/surface.js";
 import { scriptedPrompter, tempDir } from "./helpers.js";
 
 test("mixed modules retain route registration, named helpers, and anonymous default functions", () => {
@@ -168,7 +170,7 @@ test("index evidence can address module execution and anonymous defaults", async
   fs.writeFileSync(path.join(cwd, "tyxtest/routes/surface.md"), "---\nsurface: Routes\nentry: src/routes.ts\n---\n- [registered] Checkout is registered\n- [screen] A default screen exists\n");
   await indexCommand({
     cwd,
-    config: parseConfig({}),
+    config: parseConfig({ markdown: { tests: "bullets" } }),
     prompter: scriptedPrompter([]),
     interactive: true,
     env: {},
@@ -177,17 +179,60 @@ test("index evidence can address module execution and anonymous defaults", async
         assert.match(request.system, /Use default for anonymous default/);
         assert.match(request.system, /source filename.*file-context chunk/);
         return JSON.stringify({ tests: [
-          { testId: "registered", chunks: [{ path: "src/routes.ts", symbol: "routes.ts" }] },
+          { testId: "registered", chunks: [{ path: "src/routes.ts", symbol: "routes.ts" }], wholeFileReason: "The top-level route registration and execution ordering are the behavior under test." },
           { testId: "screen", chunks: [{ path: "src/routes.ts", symbol: "default" }] },
         ] });
       },
     },
   });
   const index = readIndex(path.join(cwd, "tyxtest/routes/.index.json"));
-  const chunks = chunkClosure(cwd, index.closure);
   for (const indexed of index.tests ?? []) {
+    const chunks = chunkClosure(cwd, indexed.closure ?? index.closure ?? []);
     const selected = selectChunks(chunks, indexed.chunks);
     assert.ok(selected.length > 0);
     assert.match(selected[0]!.text, indexed.testId === "registered" ? /app.post\("\/checkout"/ : /export default function/);
+  }
+});
+
+test("index maps a no-entry child surface to cross-folder chunks and parent wiring", async () => {
+  const cwd = tempDir("tyxtest-cross-file-index-");
+  fs.mkdirSync(path.join(cwd, "src", "parent"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "src", "child"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, "tyxtest", "parent", "child"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "child", "logic.ts"), "export function act() { return true; }\n");
+  fs.writeFileSync(path.join(cwd, "src", "parent", "wiring.ts"), 'import { act } from "../child/logic"; export const wired = act(); register(wired);\n');
+  fs.writeFileSync(path.join(cwd, "tyxtest", "parent", "surface.md"), "# Parent\nParent-level semantic claim.\n");
+  fs.writeFileSync(path.join(cwd, "tyxtest", "parent", "child", "surface.md"), "# Child\n\n## The action is available\n");
+  await indexCommand({
+    cwd, config: parseConfig({}), prompter: scriptedPrompter([]), interactive: true, env: {},
+    model: { async complete(request) {
+      assert.match(request.prompt, /Parent-level semantic claim/);
+      assert.match(request.prompt, /src\/child\/logic\.ts/);
+      assert.doesNotMatch(request.prompt, /Entry:/);
+      return JSON.stringify({ tests: [{ testId: testIdFor("The action is available"), chunks: [{ path: "src/child/logic.ts", symbol: "act" }], context: ["src/parent/wiring.ts"], wholeFileReason: "Top-level registration and initialization ordering in the wiring module establish that the action is available." }] });
+    } },
+  });
+  const index = readIndex(path.join(cwd, "tyxtest", "parent", "child", ".index.json"));
+  assert.equal(index.entry, undefined);
+  assert.ok(index.tests?.[0]?.closure?.some((file) => file.path === "src/child/logic.ts"));
+  assert.ok(index.tests?.[0]?.closure?.some((file) => file.path === "src/parent/wiring.ts"));
+});
+
+test("index declaration inventory matches runner selection for defaults, file-context and focus aliases", () => {
+  const cwd = tempDir("tyxtest-symbol-inventory-");
+  fs.mkdirSync(path.join(cwd, "src"));
+  const file = "src/handler.ts";
+  const text = "import { importedOnly } from './helper.js';\nexport const POLICY = 'strict';\nexport default class { read() { return importedOnly(); } write() { return POLICY; } }\nregister();\n";
+  fs.writeFileSync(path.join(cwd, file), text);
+  const inventory = indexableSymbols(file, text, 1);
+  assert.deepEqual(new Set(inventory.map((item) => item.symbol)), new Set(["POLICY", "default", "read", "write", "handler.ts"]));
+  assert.ok(!inventory.some((item) => item.symbol === "importedOnly"));
+  assert.equal(inventory.find((item) => item.symbol === "handler.ts")?.fileContext, true);
+  assert.equal(inventory.find((item) => item.symbol === "handler.ts")?.chars, text.length);
+  assert.deepEqual(indexableSymbols("src/empty.ts", ""), []);
+  for (const item of inventory) {
+    const selected = collectIndexedEvidence({ cwd, chunks: [{ path: file, symbol: item.symbol }], maxTokens: 1 });
+    assert.equal(selected.missing, false, item.symbol);
+    assert.equal(selected.chunks[0]?.text.length, item.chars, item.symbol);
   }
 });

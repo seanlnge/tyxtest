@@ -1,8 +1,5 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-
-export const INDEX_MERGE_RULE = "tyxtest/**/.index.json merge=ours";
 
 export const PENDING_GITIGNORE = "tyxtest/.pending.json";
 
@@ -13,26 +10,21 @@ export function ensureEnvGitignore(cwd: string): void {
 export function ensureIndexMergeAttributes(cwd: string): void {
   const file = path.join(cwd, ".gitattributes");
   const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-  const already = existing.split(/\r?\n/).some((line) => {
-    const trimmed = line.trim();
-    return trimmed === INDEX_MERGE_RULE || (trimmed.includes(".index.json") && trimmed.includes("merge=ours"));
+  const lines = existing.split(/\r?\n/).flatMap((line) => {
+    if (line.trim() === "# tyxtest index files merge like a lockfile") return [];
+    const rule = /^([ \t]*(?:"[^"]+"|\S+))[ \t]+(.*)$/.exec(line);
+    if (!rule) return [line];
+    const pattern = rule[1]!.trim().replace(/^"(.*)"$/, "$1");
+    if (!/^\/?tyxtest\/(?:\*\*\/)?\.index\.json$/.test(pattern)) return [line];
+    const attributes = rule[2]!.split(/[ \t]+/).filter(Boolean);
+    if (!attributes.includes("merge=ours")) return [line];
+    const remaining = attributes.filter((attribute) => attribute !== "merge=ours");
+    return remaining.length ? [`${rule[1]} ${remaining.join(" ")}`] : [];
   });
-  if (already) return;
-  const block = `# tyxtest index files merge like a lockfile\n${INDEX_MERGE_RULE}\n`;
-  if (existing.length === 0) {
-    fs.writeFileSync(file, block);
-    return;
-  }
-  const prefix = existing.endsWith("\n") ? existing : `${existing}\n`;
-  fs.writeFileSync(file, `${prefix}${block}`);
-}
-
-export function ensureOursMergeDriver(cwd: string): void {
-  if (!fs.existsSync(path.join(cwd, ".git"))) return;
-  try {
-    execFileSync("git", ["config", "--local", "merge.ours.driver", "true"], { cwd, stdio: "ignore" });
-  } catch {
-    // The attributes rule is still written when git config is unavailable.
+  const next = lines.join("\n").replace(/\n*$/, "\n");
+  if (next !== (existing ? existing.replace(/\r\n/g, "\n").replace(/\n*$/, "\n") : "")) {
+    if (!next.trim()) fs.rmSync(file, { force: true });
+    else fs.writeFileSync(file, next);
   }
 }
 

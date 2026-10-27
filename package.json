@@ -21,6 +21,7 @@
     "tyxtest": "node dist/cli.js"
   },
   "dependencies": {
+    "mdast-util-from-markdown": "^2.1.0",
     "typescript": "^5.6.3"
   },
   "devDependencies": {

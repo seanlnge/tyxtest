@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { collectClosure, computeSurfaceClosure, hashClosure } from "../src/closure/closure.js";
+import { collectClosure, collectTestContext, hashClosure } from "../src/closure/closure.js";
+import { listSourceFiles, readFileBundle } from "../src/closure/repo-files.js";
 import { tempDir } from "./helpers.js";
 
 function write(file: string, content: string): void {
@@ -92,21 +93,56 @@ test("TypeScript compiler API closure follows imports, skips node_modules, and h
   assert.notEqual(collectClosure({ cwd, entries: ["src/a.ts"], depth: null }).closureHash, before);
 });
 
-test("child closure is scoped to the parent closure", () => {
+test("previous snapshots never authorize upstream callers", () => {
   const cwd = fixture();
-  const parent = collectClosure({ cwd, entries: ["src/a.ts"], depth: 1 });
-  const scoped = computeSurfaceClosure({
-    cwd,
-    entry: "src/a.ts",
-    depth: null,
-    parentClosure: parent.files,
-  });
-  assert.deepEqual(
-    scoped.files.map((file) => file.path),
-    ["src/a.ts", "src/b.ts"],
-  );
-  assert.throws(
-    () => computeSurfaceClosure({ cwd, entry: "src/d.ts", depth: null, parentClosure: parent.files }),
-    /outside the parent surface closure/,
-  );
+  write(path.join(cwd, "src/caller.ts"), 'import { b } from "./b"; export const caller = b;');
+  const original = collectTestContext({ cwd, chunks: [{ path: "src/b.ts", symbol: "b" }] });
+  write(path.join(cwd, "src/new-upstream.ts"), 'import { caller } from "./caller"; export const upstream = caller;');
+  const refreshed = collectTestContext({ cwd, chunks: [{ path: "src/b.ts", symbol: "b" }], previous: original.files });
+  assert.deepEqual(refreshed.files.map((file) => file.path), ["src/b.ts"]);
+});
+
+test("test context includes only selected paths and explicit context, never graph or snapshots", () => {
+  const cwd = fixture();
+  write(path.join(cwd, "src/caller.ts"), 'import { b } from "./b"; export const caller = b;');
+  write(path.join(cwd, "src/transitive-caller.ts"), 'import { caller } from "./caller"; export const outer = caller;');
+  write(path.join(cwd, "src/unrelated.ts"), 'import { c } from "./c"; export const unrelated = c;');
+  write(path.join(cwd, "src/new-import.ts"), 'import { d } from "./d"; export const value = d;');
+  const initial = collectTestContext({ cwd, chunks: [{ path: "src/b.ts", symbol: "b" }] });
+  assert.ok(!initial.files.some((file) => file.path === "src/caller.ts"));
+  assert.ok(!initial.files.some((file) => file.path === "src/transitive-caller.ts"));
+  assert.ok(!initial.files.some((file) => file.path === "src/unrelated.ts"));
+  write(path.join(cwd, "src/b.ts"), 'export { c } from "./c"; export const b = "changed"; import "./new-import";');
+  write(path.join(cwd, "src/caller.ts"), "export const caller = true;");
+  const next = collectTestContext({ cwd, chunks: [{ path: "src/b.ts", symbol: "b" }], context: ["src/caller.ts"], previous: initial.files });
+  assert.ok(next.files.some((file) => file.path === "src/caller.ts"));
+  assert.ok(!next.files.some((file) => file.path === "src/new-import.ts"));
+  assert.ok(!next.files.some((file) => file.path === "src/d.ts"));
+  assert.notEqual(next.closureHash, initial.closureHash);
+});
+
+test("selected chunks may cross semantic surface hierarchy without entries", () => {
+  const cwd = fixture();
+  write(path.join(cwd, "src/child.ts"), 'import { d } from "./d"; export const child = d;');
+  const context = collectTestContext({ cwd, chunks: [{ path: "src/child.ts", symbol: "child" }] });
+  assert.deepEqual(context.files.map((file) => file.path), ["src/child.ts"]);
+});
+
+test("inventory includes mts/cts and source bundles reject truncation", () => {
+  const cwd = fixture();
+  write(path.join(cwd, "src/extra.mts"), "export const extra = true;");
+  write(path.join(cwd, "src/extra.cts"), "export const extraCjs = true;");
+  assert.ok(listSourceFiles(cwd).includes("src/extra.mts"));
+  assert.ok(listSourceFiles(cwd).includes("src/extra.cts"));
+  assert.throws(() => readFileBundle(cwd, ["src/extra.mts"], 2), /refusing to index truncated/);
+});
+
+test("repository source inventory is not silently limited to four hundred files", () => {
+  const cwd = tempDir("tyxtest-large-inventory-");
+  for (let index = 0; index < 405; index += 1) {
+    write(path.join(cwd, `src/file-${String(index).padStart(3, "0")}.ts`), `export const value = ${index};\n`);
+  }
+  const files = listSourceFiles(cwd);
+  assert.equal(files.length, 405);
+  assert.ok(files.includes("src/file-404.ts"));
 });

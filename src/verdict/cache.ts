@@ -27,6 +27,8 @@ export interface CacheHit {
   explanation: string;
   /** Missing on legacy entries; those entries are not reusable via triage. */
   judgmentContext?: string;
+  /** Rendered source spans allow cached citations to follow line-only shifts. */
+  evidenceRanges?: Array<{ path: string; line: number; endLine: number; id: string }>;
 }
 
 export interface VerdictCache {
@@ -34,14 +36,14 @@ export interface VerdictCache {
 }
 
 /** Bump when the text sent to the model changes without the source files changing. */
-const CHUNK_RENDER = "faithful-closure-v1";
-const JUDGMENT_CONTEXT_VERSION = "jctx-v1";
+const CHUNK_RENDER = "indexed-evidence-v4-shared-scopes";
+const JUDGMENT_CONTEXT_VERSION = "jctx-v6";
 
 export interface JudgmentSurface {
   relativeDir: string;
   name: string;
   description: string;
-  entry?: string;
+  context?: string;
 }
 
 /** Fingerprint only settings and content that can change the resulting judgment. */
@@ -50,6 +52,7 @@ export function judgmentContextFingerprint(
   surface: JudgmentSurface,
   flows: readonly FlowRecord[],
   chunkIds: readonly string[] = [],
+  semanticContext = "",
 ): string {
   const model = (value: TyxtestConfig["runnerModel"]) =>
     value ? { provider: value.provider, model: value.model, kind: value.kind ?? null } : null;
@@ -60,7 +63,7 @@ export function judgmentContextFingerprint(
       relativeDir: surface.relativeDir,
       name: surface.name,
       description: surface.description,
-      entry: surface.entry ?? null,
+      context: semanticContext,
     },
     config: {
       runnerModel: model(config.runnerModel),
@@ -73,18 +76,17 @@ export function judgmentContextFingerprint(
       verdictRule: config.verdictRule,
       triage: config.triage,
       relocateCheck: config.relocateCheck,
-      closureDepth: config.closureDepth,
       chunkMaxTokens: config.chunkMaxTokens,
+      markdown: config.markdown,
     },
     flows: flows.map((flow) => ({
       testId: flow.testId,
       steps: flow.steps.map((step) => ({
         id: step.id,
         text: step.text,
-        entry: step.entry,
+        context: step.context ?? [],
         chunks: step.chunks.map((chunk) => ({ path: chunk.path, symbol: chunk.symbol })),
       })),
-      closure: flow.closure.map((item) => ({ path: item.path, hash: item.hash })),
     })),
     chunkIds: [...chunkIds],
   };
