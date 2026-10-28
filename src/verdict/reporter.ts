@@ -34,7 +34,7 @@ export function aggregateFindings(results: ReportedTest[], verbose: boolean): st
   return lines;
 }
 
-export function summaryLines(results: ReportedTest[], unsureBlocks: boolean, options: { elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; color?: boolean } = {}): string[] {
+export function summaryLines(results: ReportedTest[], unsureBlocks: boolean, options: { elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; indexUsage?: ModelUsage; color?: boolean } = {}): string[] {
   const counts = countVerdicts(results);
   const color = (code: string, text: string) => options.color ? `\x1b[${code}m${text}\x1b[0m` : text;
   const colored = `${color("32", String(counts.pass))} pass, ${color("31", String(counts.fail))} fail, ${color("33", String(counts.unsure))} unsure`;
@@ -43,6 +43,7 @@ export function summaryLines(results: ReportedTest[], unsureBlocks: boolean, opt
   ];
   if (options.runnerUsage) lines.push(`runner tokens: ${usageText(options.runnerUsage)}`);
   if (options.fallbackUsage) lines.push(`fallback-model tokens: ${usageText(options.fallbackUsage)}`);
+  if (options.indexUsage) lines.push(`index-model tokens: ${usageText(options.indexUsage)}`);
   if (counts.fail > 0) lines.push("fail blocks CI");
   if (counts.unsure > 0 && unsureBlocks) lines.push("unsure blocks CI");
   return lines;
@@ -63,7 +64,7 @@ export function formatReport(
   verbose = false,
   showCached = false,
   titles: Map<string, string> = new Map(),
-  totals: { elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage } = {},
+  totals: { elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; indexUsage?: ModelUsage } = {},
   color = false,
 ): string {
   const lines: string[] = [];

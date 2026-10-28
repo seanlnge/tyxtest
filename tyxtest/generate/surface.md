@@ -47,3 +47,7 @@ If the accepted tree is empty after the user drops surfaces, generate fails with
 ## Generate indexes the surfaces it writes
 
 After writing, generate logs how many surfaces it wrote (`wrote N surface` or `wrote N surfaces`) and then runs the same indexing as `tyxtest index` over the new surfaces, using the same configuration and model, so the shared `tyxtest/.index.json` is created without a separate command.
+
+## Orders a pizza
+
+The command immediately orders a pizza once complete

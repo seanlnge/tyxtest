@@ -27,18 +27,22 @@ export async function indexCommand(options: {
   env?: NodeJS.ProcessEnv;
   config?: TyxtestConfig;
   model?: ModelSource;
+  /** Internal run preflight: exact surface keys and authored claim IDs needing refresh. */
+  incremental?: ReadonlyMap<string, readonly string[]>;
 }): Promise<void> {
   const config = options.config ?? loadConfig(options.cwd);
   const env = loadEnvFile(options.cwd, options.env ?? process.env);
-  const model = resolveModel(options.model, () => createModelClient(requireModels(config).indexModel, env));
+  let model: ModelClient | undefined;
+  const indexClient = () => model ??= resolveModel(options.model, () => createModelClient(requireModels(config).indexModel, env));
   const surfaces = discoverSurfaces(options.cwd, config.markdown);
   if (surfaces.length === 0) {
-    if (readIndexes(options.cwd).size > 0) writeIndexes(options.cwd, new Map());
+    if (!options.incremental && readIndexes(options.cwd).size > 0) writeIndexes(options.cwd, new Map());
     throw new Error("No tyxtest surfaces found.");
   }
   if (options.fix && options.pending) throw new Error("Use either --fix or --pending, not both.");
+  if (options.incremental && (options.fix || options.pending)) throw new Error("Incremental indexing cannot use --fix or --pending.");
   const selected = new Set(
-    (options.fix ? surfaces : filterSurfaces(surfaces, options.surfaces)).map((surface) => surface.relativeDir),
+    (options.incremental ? surfaces.filter((surface) => options.incremental!.has(surface.relativeDir)) : options.fix ? surfaces : filterSurfaces(surfaces, options.surfaces)).map((surface) => surface.relativeDir),
   );
   if (options.pending) {
     const pending = readPending(options.cwd);
@@ -65,42 +69,57 @@ export async function indexCommand(options: {
   const indexes = readIndexes(options.cwd);
   const knownSurfaces = new Set(surfaces.map((surface) => surface.relativeDir));
   for (const key of indexes.keys()) {
-    if (!knownSurfaces.has(key)) indexes.delete(key);
+    if (!options.incremental && !knownSurfaces.has(key)) indexes.delete(key);
   }
+  const cleared = new Map<string, Set<string>>();
 
   for (const surface of surfaces) {
     if (!selected.has(surface.relativeDir)) continue;
     const index = await indexSurface({
       cwd: options.cwd,
       surface,
-      model,
+      model: indexClient,
       prompter: options.prompter,
       surfaces,
       markdown: config.markdown,
       chunkMaxTokens: config.chunkMaxTokens,
+      ...(options.incremental ? { testIds: options.incremental.get(surface.relativeDir), existing: indexes.get(surface.relativeDir) } : {}),
     });
+    if (options.incremental) {
+      const live = new Set([...(index.tests ?? []), ...(index.flows ?? [])].map((item) => item.testId));
+      const previous = indexes.get(surface.relativeDir);
+      const removed = [...(previous?.tests ?? []), ...(previous?.flows ?? [])].filter((item) => !live.has(item.testId)).map((item) => item.testId);
+      cleared.set(surface.relativeDir, new Set([...(options.incremental.get(surface.relativeDir) ?? []), ...removed]));
+    }
     indexes.set(surface.relativeDir, index);
   }
   writeIndexes(options.cwd, indexes);
-  for (const surface of selected) clearPendingSurface(options.cwd, surface);
+  for (const surface of selected) clearPendingSurface(options.cwd, surface, options.incremental ? cleared.get(surface) : undefined);
 }
 
 async function indexSurface(options: {
   cwd: string;
   surface: Surface;
-  model: ModelClient;
+  model: ModelSource;
   prompter: Prompter;
   surfaces: Surface[];
   markdown: TyxtestConfig["markdown"];
   chunkMaxTokens: number;
+  testIds?: readonly string[];
+  existing?: SurfaceIndex;
 }): Promise<SurfaceIndex> {
   const markdown = readText(options.surface.markdownPath);
   const semantic = surfaceContextFor(options.surface, options.surfaces, options.markdown);
-  const cases = readTests(markdown, options.markdown);
+  const allCases = readTests(markdown, options.markdown);
+  const liveIds = new Set(allCases.map((test) => test.id));
+  const cases = options.testIds ? allCases.filter((test) => options.testIds!.includes(test.id)) : allCases;
   if (cases.length === 0) {
     options.prompter.log(`indexed ${options.surface.relativeDir}`);
-    return { files: [], notes: [], contextHash: semantic.hash, tests: [], flows: [] };
+    return { files: [], notes: [], ...options.existing, contextHash: semantic.hash,
+      tests: (options.existing?.tests ?? []).filter((test) => liveIds.has(test.testId)),
+      flows: (options.existing?.flows ?? []).filter((flow) => liveIds.has(flow.testId)) };
   }
+  const model = resolveModel(options.model, () => { throw new Error("An index model is required to map authored claims."); });
   const sourceFiles = listSourceFiles(options.cwd);
   const bundle = readFileBundle(options.cwd, sourceFiles, Infinity);
   const sourceTexts = new Map(sourceFiles.map((file) => [file, readText(path.join(options.cwd, file))]));
@@ -114,6 +133,8 @@ async function indexSurface(options: {
     bundle || "(no files)",
     `Surface: ${options.surface.name}`,
     semantic.text,
+    ...(options.testIds ? ["Surface claims (context only, not mapping targets; map only the Test ids below):",
+      allCases.map((test) => `## ${test.text}${test.notes ? `\n\n${test.notes}` : ""}`).join("\n\n")] : []),
     pendingPrompt(options.cwd, options.surface.relativeDir),
   ].filter(Boolean).join("\n\n");
   const testPrompt = (ids: Set<string>) => cases.filter((test) => ids.has(test.id))
@@ -140,7 +161,7 @@ async function indexSurface(options: {
   let problems: string[] = [];
   let repairIds = new Set(currentTestIds);
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await options.model.complete(attempt === 0 ? request : { ...request, prompt: `${promptPrefix}\n\nTest ids:\n\n${testPrompt(repairIds)}\n\nREPAIR REQUIRED (one final attempt):\n${problems.map((problem) => `- ${problem}`).join("\n")}\nReturn mappings ONLY for the requested testIds above. Already-valid claims are retained and cannot be overwritten. Account for EVERY requested testId. Use only exact inventory symbols, explicitly select necessary helpers/callers/constants, and keep context empty unless the whole file is truly required. Do not silently drop invalid references. Mark genuinely undiscoverable claims unmappable with a reason.` });
+    const response = await model.complete(attempt === 0 ? request : { ...request, prompt: `${promptPrefix}\n\nTest ids:\n\n${testPrompt(repairIds)}\n\nREPAIR REQUIRED (one final attempt):\n${problems.map((problem) => `- ${problem}`).join("\n")}\nReturn mappings ONLY for the requested testIds above. Already-valid claims are retained and cannot be overwritten. Account for EVERY requested testId. Use only exact inventory symbols, explicitly select necessary helpers/callers/constants, and keep context empty unless the whole file is truly required. Do not silently drop invalid references. Mark genuinely undiscoverable claims unmappable with a reason.` });
     try {
       const incoming = parseIndexResponse(response);
       const requestedIds = attempt === 0 ? currentTestIds : repairIds;
@@ -185,7 +206,7 @@ async function indexSurface(options: {
   for (const test of cases) {
     const reason = chunksByTestId.get(test.id)?.unmappable;
     if (!reason) continue;
-    const diagnostic = `Unmappable test [${test.id}] ${test.text}: ${reason}. Run will report unsure; no implementation mapping was invented.`;
+    const diagnostic = `Unmappable test [${test.id}] ${test.text}: ${reason}. Run will judge with no related code chunks; no implementation mapping was invented.`;
     notes.push(diagnostic);
     options.prompter.warn(diagnostic);
   }
@@ -217,12 +238,14 @@ async function indexSurface(options: {
     const collected = collectTestContext({ cwd: options.cwd, chunks, context: explicitContext });
     return { ...test, closure: collected.files, closureHash: collected.closureHash };
   });
+  // Stored unchanged maps are trusted records, not new responses needing justification.
   const index: SurfaceIndex = {
     files: [],
-    notes,
+    ...options.existing,
+    notes: [...new Set([...(options.existing?.notes ?? []), ...notes])],
     contextHash: semantic.hash,
-    tests: testsWithContext,
-    flows,
+    tests: [...(options.existing?.tests ?? []).filter((test) => liveIds.has(test.testId) && !currentTestIds.has(test.testId)), ...testsWithContext],
+    flows: [...(options.existing?.flows ?? []).filter((flow) => liveIds.has(flow.testId) && !currentTestIds.has(flow.testId)), ...flows],
   };
   const unmappableCount = cases.filter((test) => chunksByTestId.get(test.id)?.unmappable).length;
   options.prompter.log(`coverage ${options.surface.relativeDir}: ${cases.length - unmappableCount} mapped, ${unmappableCount} explicitly unmappable of ${cases.length} tests`);

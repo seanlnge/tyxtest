@@ -1,14 +1,14 @@
 # Run command
 
-`tyxtest run` checks each product claim against its fresh indexed chunks and explicitly selected context, asks the configured models to judge the claim, prints a report, and writes JSON and JUnit results. It does not automatically follow imports or callers. It is read-only with respect to the index and the Markdown specifications.
+`tyxtest run` prepares mappings for new or changed authored tests, then checks each product claim against its fresh indexed chunks and explicitly selected context. It asks the configured models to judge the claim, prints a report, and writes JSON and JUnit results. It does not automatically follow source imports or callers and never rewrites the Markdown specifications.
 
 ## Run checks claims statically and never executes the product
 
 Judging parses source files and sends only the indexed declarations and explicit context to the models. The command does not import, start, or execute the code under test, so runtime failures such as crashes or bad configuration values are not detected.
 
-## Run never writes the index
+## Run keeps current mappings and authored Markdown unchanged during judgment
 
-`tyxtest run` does not write `tyxtest/.index.json` or edit any `surface.md`. The files it can create or update are `.tyxtest/results.json`, `.tyxtest/junit.xml`, the verdict cache `.tyxtest/verdict-cache.json`, and, on a local machine, `tyxtest/.pending.json` when it suggests a reindex.
+When selected authored-test mappings are already current, run does not rewrite `tyxtest/.index.json`. Its preparation phase can update the shared index to add or refresh authored claims and remove deleted claims; subsequent judgments never rewrite mappings or any `surface.md`. Normal report files are `.tyxtest/results.json` and `.tyxtest/junit.xml`, with the verdict cache in `.tyxtest/verdict-cache.json` and local source-reindex suggestions in `tyxtest/.pending.json`.
 
 ## Run writes JSON and JUnit results
 
@@ -24,11 +24,11 @@ After judgments complete successfully, the exit code is 1 when any test is `fail
 
 Positional arguments are surface paths; a surface is judged if its path equals an argument or is nested beneath one. With no arguments every surface is judged. If there are no surfaces, run fails with "No tyxtest surfaces found."; if the arguments match none, it fails with "No matching surfaces."
 
-## Run normally fails for a surface that has no index
+## Run automatically indexes new and edited tests before judging them
 
-If a surface has no index records, run fails with `Surface "<path>" is not indexed. Run \`tyxtest index\` locally.`
+Before looking up verdict caches or applying Git-based skips, run indexes selected claims that lack a mapping or whose stored claim hash does not match their current heading and body. A new surface is indexed the same way, with no separate `tyxtest index` command, including noninteractive and CI runs. Existing current claims and flow mappings are retained rather than sent to the index model again just because one test was added.
 
-When run is non-interactive (for example `--non-interactive`, or the `CI` variable is set) and the configuration sets `nonInteractive` to `search`, it instead asks the index model to pick the files for each test of that surface and judges them, and every such verdict is reported as `unsure` and is not cached.
+Successful preparation persists validated mappings before their first judgment. Indexing failures or missing index-model credentials stop the run clearly before judgment rather than hiding an unindexed test behind a cached success. Fresh unchanged mappings require no indexing call, and deleted claim records can be pruned without calling a model. Only selected run surfaces are synchronized.
 
 ## Run reuses cached verdicts
 
@@ -42,6 +42,6 @@ Cached tests are left out of the report unless `--cached` is passed or `showCach
 
 ## Run can skip tests that Git shows as unchanged
 
-When `ignoreUnchanged` is true, run compares the working tree to `baseRef` (default `origin/main`) and also counts untracked files. Tests with stale or missing mappings are reported unsure before the skip check. Otherwise, a test is considered for judgment only if the diff touches a file explicitly selected by its mapping, its `surface.md` or an ancestor's `surface.md`, or a lockfile. Other tests get the verdict `skipped` with the explanation `skipped (unchanged)`. A considered test may still reuse a cached verdict if its selected code has not changed; unrelated callers and imports do not become model input.
+When `ignoreUnchanged` is true, run compares the working tree to `baseRef` (default `origin/main`) and also counts untracked files. New or refreshed authored mappings are prepared and judged before cache or unchanged filtering can hide them. A current mapping whose selected code is missing remains `unsure`. Otherwise, a test is considered for judgment only if the diff touches a file explicitly selected by its mapping, its `surface.md` or an ancestor's `surface.md`, or a lockfile. Other tests get the verdict `skipped` with the explanation `skipped (unchanged)`. A considered test may still reuse a cached verdict if its selected code has not changed; unrelated callers and imports do not become model input.
 
 If Git cannot diff against `baseRef`, run fails with a message to set `baseRef` or turn `ignoreUnchanged` off.

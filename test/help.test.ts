@@ -53,7 +53,10 @@ test("help run and run -h print the run flags", async () => {
     assert.match(out, /an unsure aggregate escalates once/);
     assert.match(out, /The escalation model does not rerun/);
     assert.match(out, /own fresh source context/);
-    assert.match(out, /Indexed chunks select evidence, not the complete verdict context/);
+    assert.match(out, /only indexed chunks and explicit context/);
+    assert.match(out, /automatically index new\/edited authored claims/);
+    assert.match(out, /preparation can update the shared \.index\.json in CI/);
+    assert.match(out, /separate index-model tokens/);
     assert.match(out, /markdown\.testDiscovery\.prefix/);
     assert.match(out, /Nonmatching peer headings still end tests/);
     assert.match(out, /nesting supplies semantic context and never restricts source files/);

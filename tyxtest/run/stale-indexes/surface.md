@@ -1,16 +1,16 @@
 # Run stale indexes
 
-`tyxtest run` never repairs the index. When a test's mapping is missing, outdated, or points at code that has moved, run says so, reports the test as `unsure` instead of silently trusting old evidence, and leaves the fix to `tyxtest index`.
+`tyxtest run` automatically prepares mappings for new or edited authored tests and changed product context. It still refuses to invent evidence when a current mapping is explicitly unmappable or refers to missing source; those source-mapping problems remain visible instead of silently widening the input.
 
-## Run reports unsure for a test with no current mapping
+## Run does not repeatedly index a current unmappable test
 
-A test is reported as `unsure` without any model call when any of these is true: its surface has no index record for the test, the stored `claimHash` no longer matches the test's current heading and body, the test has no mapped chunks, or its source context is empty. The explanation tells the user to run `tyxtest index`, and the warning `index stale: test "<heading>" in "<surface>" has no current evidence mapping. Run \`tyxtest index\` to refresh it.` is printed.
+A persisted test record whose claim hash and product-context hash are current can explicitly have no mapped implementation. Run sends the test to the configured runner with no code chunks and an explicit statement that no related implementation was discoverable, without asking the index model again on every invocation. The decision model's verdict uses the normal thresholds without requiring evidence chunks or forcing `unsure`; no per-chunk evidence questions are sent. Empty mappings are not skipped by Git's unchanged-source filter, though verdict caching still applies. A mapping whose selected declarations have disappeared instead remains `unsure` and is not replaced with unrelated code. The user can explicitly reindex when implementation or evidence is available.
 
-For current indexes with claim hashes, new and edited tests therefore stay `unsure` until they are indexed. Legacy mappings without a claim hash, and flow-only mappings, do not have the same hash check.
+New or edited claims are different: missing records and changed heading/body hashes trigger automatic indexing before judgment. Legacy mappings without a claim hash, and existing flow-only mappings, retain their documented compatibility behavior rather than being repeatedly reindexed solely for lacking newer metadata.
 
-## Run reports unsure when the surface context changed
+## Run refreshes affected mappings when the surface context changed
 
-Each surface's index records a `contextHash` of its ancestor context. If it no longer matches, run prints `index stale: semantic context for "<surface>" changed. Run \`tyxtest index\` to refresh it.` and reports every test in that surface as `unsure`.
+Each surface's index records a `contextHash` of its semantic surface and ancestor context. When that meaning changes, current code selections cannot simply be assumed to refer to the same product behavior. Run refreshes all affected claims of each selected surface before judging them, without requiring that its parent surface already have an index. Unselected surfaces retain their records.
 
 ## Run refreshes selected source without expanding the index mapping
 
@@ -26,4 +26,4 @@ When a test turns out to have a stale index (the relocate check found the featur
 
 ## Run does not write pending suggestions in CI
 
-When the `CI` environment variable is set to anything other than empty, `0`, or `false`, run prints the same stale-index warning but does not write `tyxtest/.pending.json`. A run never writes committed files.
+When the `CI` environment variable is set to anything other than empty, `0`, or `false`, run prints the same source-staleness warning but does not write `tyxtest/.pending.json`. CI does not disable automatic preparation of new or changed authored-test mappings, which may update the shared index; judgments never rewrite authored Markdown or unrelated mappings.

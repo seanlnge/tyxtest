@@ -1,6 +1,6 @@
 # Index command
 
-`tyxtest index` maps every test to the code that implements it. The configured index model reads the test's heading and full Markdown body together with the repository source, and the result is written to the shared `tyxtest/.index.json`. Runs never write that file, so indexing is how new or edited tests become runnable.
+`tyxtest index` maps every selected test to the code that implements it. The configured index model reads the test's heading and full Markdown body together with the repository source, and the result is written to the shared `tyxtest/.index.json`. `tyxtest run` also prepares missing or outdated authored-test mappings automatically before judging; explicit indexing remains available for full reindexing and pending source suggestions.
 
 ## Index maps each test across the whole repository
 
@@ -8,7 +8,7 @@ The model maps each test to the concrete declarations needed to judge it: functi
 
 ## Index gives the model each test's heading and full body
 
-The indexing request lists every test with its internal id, its heading, and its complete Markdown body (paragraphs, lists, examples, and code blocks), so notes and schemas reach the model along with the heading. It also contains the repository's source file inventory and the full text of every source file.
+The indexing request lists every test being mapped with its internal id, heading, and complete Markdown body (paragraphs, lists, examples, and code blocks), so notes and schemas reach the model along with the heading. It also contains the repository's source file inventory and the full text of every source file. An explicit surface reindex targets all its current tests; automatic preparation may target only new or changed claims while retaining current mappings.
 
 ## Index gives the model the ancestor surfaces as context
 

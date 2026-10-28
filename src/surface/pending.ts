@@ -52,8 +52,8 @@ export function addPending(cwd: string, suggestion: PendingSuggestion): void {
   writeText(pendingPath(cwd), prettyJson({ suggestions: all }));
 }
 
-export function clearPendingSurface(cwd: string, surface: string): void {
-  const remaining = readPending(cwd).filter((item) => item.surface !== surface);
+export function clearPendingSurface(cwd: string, surface: string, testIds?: ReadonlySet<string>): void {
+  const remaining = readPending(cwd).filter((item) => item.surface !== surface || (testIds !== undefined && !testIds.has(item.testId)));
   const file = pendingPath(cwd);
   if (remaining.length === 0) {
     if (fs.existsSync(file)) fs.rmSync(file);

@@ -46,14 +46,20 @@ function fixture(flow = false) {
 }
 
 test("entry-free child tests own separate source maps and require no parent index", async () => {
-  const { cwd, parent, config } = fixture();
+  const { cwd, parent, cases, config } = fixture();
   const requests: DecisionRequest[] = [];
   const model: ModelClient = {
     async complete() { throw new Error("Unexpected LLM call"); },
     async decide(request) { requests.push(request); return { probabilities: [0.99, 0.01] }; },
   };
   const indexBefore = fs.readFileSync(path.join(cwd, "tyxtest/.index.json"), "utf8");
-  const run = () => runCommand({ cwd, config, model, env: {}, stdout: () => {}, stderr: () => {} });
+  let indexCalls = 0;
+  const indexer: ModelClient = { async complete() {
+    indexCalls += 1;
+    return JSON.stringify({ tests: cases.map((claim, index) => ({ testId: claim.id,
+      chunks: [{ path: index === 0 ? "src/ui.ts" : "src/api.ts", symbol: index === 0 ? "form" : "validate" }] })) });
+  } };
+  const run = () => runCommand({ cwd, config, model, indexModel: indexer, surfaces: ["checkout/payment"], env: {}, stdout: () => {}, stderr: () => {} });
   const first = await run();
   assert.equal(first.results.length, 2);
   assert.ok(first.results.every((result) => result.verdict === "pass"));
@@ -66,12 +72,15 @@ test("entry-free child tests own separate source maps and require no parent inde
   assert.match(verdicts[1]!.state, /AMOUNT_REJECTED/);
   assert.doesNotMatch(verdicts[1]!.state, /PAYMENT_FORM/);
   assert.ok((await run()).results.every((result) => result.cached));
+  assert.equal(indexCalls, 0);
+  assert.equal(fs.readFileSync(path.join(cwd, "tyxtest/.index.json"), "utf8"), indexBefore);
   const callsBeforeContextEdit = requests.length;
   fs.appendFileSync(parent, "\nThis now describes an administrator purchase.\n");
-  const stale = await run();
-  assert.ok(stale.results.every((result) => result.verdict === "unsure" && !result.cached));
-  assert.equal(requests.length, callsBeforeContextEdit);
-  assert.equal(fs.readFileSync(path.join(cwd, "tyxtest/.index.json"), "utf8"), indexBefore);
+  const synced = await run();
+  assert.ok(synced.results.every((result) => result.verdict === "pass" && !result.cached));
+  assert.ok(requests.length > callsBeforeContextEdit);
+  assert.equal(indexCalls, 1);
+  assert.notEqual(fs.readFileSync(path.join(cwd, "tyxtest/.index.json"), "utf8"), indexBefore);
 });
 
 test("a flow retains disconnected caller context while an unrelated test stays cached", async () => {

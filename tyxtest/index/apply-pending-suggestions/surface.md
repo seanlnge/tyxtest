@@ -23,7 +23,7 @@ Runs write suggestions to `tyxtest/.pending.json`. The block below shows the exa
 
 ## Index pending only processes surfaces listed in the pending suggestions
 
-With `--pending`, only surfaces that appear in `tyxtest/.pending.json` are reindexed. Surface arguments narrow that set further, and the surfaces that are not flagged keep their existing index records unchanged.
+With `--pending`, only surfaces that appear in `tyxtest/.pending.json` are reindexed. Surface arguments narrow that set further. Existing live surfaces that are not flagged keep their mappings; normal index housekeeping can still prune records for surfaces whose Markdown files were deleted.
 
 ## Index pending reindexes the whole flagged surface
 

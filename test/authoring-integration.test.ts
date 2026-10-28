@@ -118,10 +118,11 @@ test("modern Markdown indexes and runs nested claims with notes without rewritin
   const originalParentIndex = readIndexes(cwd).get("index");
   const edited = child.replace("Leave unrelated suggestions unchanged.", "Only apply suggestions for this surface.");
   fs.writeFileSync(childFile, edited);
+  claims.splice(1, 1, ...readTests(edited));
   const callsBeforeStaleRun = judgments.length;
-  const stale = await runCommand({ cwd, config, model: runner, env: {}, stdout: () => {}, stderr: () => {} });
-  assert.equal(stale.results.find((claim) => claim.surface === "index/apply")?.verdict, "unsure");
-  assert.equal(judgments.length, callsBeforeStaleRun);
+  const synced = await runCommand({ cwd, config, model: runner, indexModel: indexer, env: {}, stdout: () => {}, stderr: () => {} });
+  assert.equal(synced.results.find((claim) => claim.surface === "index/apply")?.verdict, "pass");
+  assert.ok(judgments.length > callsBeforeStaleRun);
 
   claims.splice(1, 1, ...readTests(edited));
   await indexCommand({ cwd, config, model: indexer, surfaces: ["index/apply"], prompter: scriptedPrompter([]), env: {} });

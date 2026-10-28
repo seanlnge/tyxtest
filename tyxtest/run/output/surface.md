@@ -28,7 +28,7 @@ The first footer line ends with the total elapsed time for the whole run in squa
 
 ## Run footer reports runner and fallback token usage
 
-The footer adds two lines, `runner tokens:` and `fallback-model tokens:`, each showing `<n> input, <n> output, <n> total` for the tokens used during this run. The runner line counts the decision or LLM runner. The fallback line counts the escalation model, which defaults to the index model, and shows zero when no escalation model client different from the runner was used. When the provider does not report usage, the line reads `unavailable`.
+The footer reports `runner tokens:` and `fallback-model tokens:`, each showing `<n> input, <n> output, <n> total` for judgment work during this run. The runner line counts the decision or LLM runner. The fallback line counts the escalation model, which defaults to the index model, and shows zero when no distinct escalation client was used. Automatic index preparation makes its usage visible separately rather than silently adding it to runner or escalation totals, including when roles reuse one client. When the provider does not report usage, the relevant total reads `unavailable`.
 
 ## Run footer states what blocks CI
 

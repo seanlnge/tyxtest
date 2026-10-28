@@ -262,7 +262,7 @@ test("failed final index persistence does not clear pending suggestions", async 
   assert.equal(readPending(cwd)[0]?.reason, "pending must survive failed write");
 });
 
-test("explicitly unmappable implementation has a coverage diagnostic and stays unsure without runner calls", async () => {
+test("explicitly unmappable implementation persists empty chunks and reaches the decision runner", async () => {
   const { cwd, cases, config } = qualityFixture();
   const prompter = scriptedPrompter([]);
   let calls = 0;
@@ -272,12 +272,22 @@ test("explicitly unmappable implementation has a coverage diagnostic and stays u
   assert.equal(calls, 1);
   assert.ok(prompter.logs.includes("coverage quality: 0 mapped, 1 explicitly unmappable of 1 tests"));
   assert.match(readIndexes(cwd).get("quality")!.notes.join("\n"), /Unmappable test.*No implementation/);
-  assert.ok(prompter.warnings.some((warning) => warning.includes("Run will report unsure")));
+  assert.deepEqual(readIndexes(cwd).get("quality")!.tests![0]!.chunks, []);
+  assert.ok(prompter.warnings.some((warning) => warning.includes("Run will judge with no related code chunks")));
+  let judgments = 0;
   const result = await runCommand({ cwd, config, env: {}, stdout: () => {}, stderr: () => {}, model: {
-    async complete() { throw new Error("No model call for unmappable test"); },
-    async decide() { throw new Error("No model call for unmappable test"); },
+    async complete() { throw new Error("No reindex or LLM call expected"); },
+    async decideMany(requests) {
+      judgments += 1;
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]!.purpose, "verdict");
+      assert.match(requests[0]!.state, /No related implementation was discoverable/);
+      return [{ probabilities: [0, 1] }];
+    },
   } });
-  assert.equal(result.results[0]?.verdict, "unsure");
+  assert.ok(judgments > 0);
+  assert.equal(result.results[0]?.verdict, "fail");
+  assert.deepEqual(result.results[0]?.evidence, []);
 });
 
 test("flow step imports normalize without repair while missing step evidence or dependencies require repair", async () => {

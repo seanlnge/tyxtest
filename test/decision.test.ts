@@ -767,15 +767,21 @@ test("same test IDs on different surfaces do not share verdicts or triage", asyn
   assert.equal(verdicts, 2);
 });
 
-test("a missing indexed evidence mapping stays unsure despite available closure code", async () => {
+test("a missing authored mapping is automatically indexed before decision judgment", async () => {
   const cwd = scaffold();
   const indexFile = path.join(cwd, "tyxtest/login/.index.json");
   const index = readIndex(indexFile);
   index.tests = [];
   writeIndex(indexFile, index);
   const runner = decisionRunner(0.99, () => 0.99);
-  const outcome = await runCommand({ cwd, model: runner, config: config(), env: {}, stdout: () => {} });
-  assert.equal(outcome.results[0]?.verdict, "unsure");
-  assert.match(outcome.results[0]?.explanation ?? "", /new or changed since indexing/);
-  assert.equal(runner.decides.length, 0);
+  let indexCalls = 0;
+  const indexModel: ModelClient = { async complete() {
+    indexCalls += 1;
+    return JSON.stringify({ tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "SubmitButton" }] }] });
+  } };
+  const outcome = await runCommand({ cwd, model: runner, indexModel, config: config(), env: {}, stdout: () => {}, stderr: () => {} });
+  assert.equal(outcome.results[0]?.verdict, "pass");
+  assert.equal(indexCalls, 1);
+  assert.ok(runner.decides.length > 0);
+  assert.ok(runner.decides.every((request) => !request.state.includes("function header")));
 });

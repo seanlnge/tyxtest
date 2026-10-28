@@ -30,7 +30,7 @@ interface PaintedRow extends ProgressRow {
 export interface RunProgress {
   complete(result: ReportedTest, durationMs: number): void;
   note(message: string): void;
-  finish(results: ReportedTest[], options: { unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage }): void;
+  finish(results: ReportedTest[], options: { unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; indexUsage?: ModelUsage }): void;
   dispose(): void;
 }
 
@@ -53,7 +53,7 @@ export function createRunProgress(
   let timer: ReturnType<typeof setInterval> | undefined;
   const columns = sink.columns && sink.columns > 0 ? sink.columns : 80;
 
-  const paint = (final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage } | null): void => {
+  const paint = (final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; indexUsage?: ModelUsage } | null): void => {
     const lines = renderLines(painted, {
       frame: SPINNER[frame % SPINNER.length] ?? "⠋",
       color,
@@ -99,7 +99,7 @@ export function createRunProgress(
       sink.write(`${message}\n`);
       paint(null);
     },
-    finish(results: ReportedTest[], finishOptions: { unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage }): void {
+    finish(results: ReportedTest[], finishOptions: { unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; indexUsage?: ModelUsage }): void {
       if (stopped) return;
       if (timer) clearInterval(timer);
       timer = undefined;
@@ -132,7 +132,7 @@ function renderLines(
     frame: string;
     color: boolean;
     columns: number;
-    final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage } | null;
+    final: { results: ReportedTest[]; unsureBlocks: boolean; verbose: boolean; elapsedMs?: number; runnerUsage?: ModelUsage; fallbackUsage?: ModelUsage; indexUsage?: ModelUsage } | null;
   },
 ): string[] {
   const lines: string[] = [];

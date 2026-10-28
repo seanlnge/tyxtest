@@ -10,9 +10,9 @@ For an ordinary test judgment, the model receives the surface name and its descr
 
 The runner reads the test's indexed declarations fresh from disk and sends those chunks plus any explicitly indexed context. It never adds static callers, imports, dependencies, or paths from a previous closure snapshot. Unmapped functions in an indexed file are excluded unless that entire file was explicitly selected as context. A flow step receives only its own selected chunks and context, together with any explicitly test-wide context.
 
-## Run asks the decision model one pass-or-fail question per test
+## Each ordinary decision attempt asks one pass-or-fail question
 
-The decision runner gets one batched request containing a verdict question with the options `pass` then `fail` in that fixed order, followed by one yes-or-no evidence question for each of the test's chunks. The reported pass probability is its p(pass) answer, and it is compared with `thresholds.pass` and `thresholds.fail` from the configuration: p(pass) at or above the pass threshold (0.9 by default) is a pass, at or below the fail threshold (0.1 by default) is a fail, and anything between is unsure.
+Each ordinary decision attempt sends one batched request containing a verdict question with the options `pass` then `fail` in that fixed order, followed by one yes-or-no evidence question for each selected chunk. Retries repeat this batch rather than adding verdict questions to one attempt; flows instead have a verdict question for each judged step. The reported pass probability is the verdict answer's p(pass), compared with `thresholds.pass` and `thresholds.fail`: at or above the pass threshold (0.9 by default) is a pass, at or below the fail threshold (0.1 by default) is a fail, and anything between is unsure.
 
 ## Run shows the highest-scoring chunks as evidence
 
@@ -48,7 +48,7 @@ If the decision request throws an error, run asks the escalation model for one v
 
 ## Run supports LLM-only judgments
 
-With a supported LLM runner configuration and `runnerModel.kind` set to `llm`, fresh judgments of valid mapped ordinary tests go directly to that LLM using their selected source bundle and the same citation check. Multi-step flows skip decision requests too: each valid mapped step is judged by the LLM with that step's selected source. Cache reuse and unchanged skips can avoid a fresh judgment. Missing or stale mappings remain `unsure` without inventing or widening evidence.
+With a supported LLM runner configuration and `runnerModel.kind` set to `llm`, fresh judgments of valid mapped ordinary tests go directly to that LLM using their selected source bundle and the same citation check. Multi-step flows skip decision requests too: each valid mapped step is judged by the LLM with that step's selected source. New or edited authored tests are indexed first. Cache reuse and unchanged skips can avoid other fresh judgments. Explicitly unmappable tests reach the configured runner with no code; the LLM citation check still downgrades an uncited pass to `unsure`. Missing selected source remains `unsure` without inventing or widening evidence.
 
 ## Run checks a flow's step count against an at most limit
 

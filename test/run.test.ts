@@ -231,19 +231,16 @@ test("LLM citations are checked against the provided snapshot, not a later disk 
   assert.equal(outcome.results[0]?.verdict, "pass");
 });
 
-test("unindexed surfaces fail closed and search mode forces unsure without writing an index", async () => {
-  const closed = project();
-  await assert.rejects(
-    () => runCommand({ cwd: closed, interactive: false, env: {}, model: scriptedModel([]) }),
-    /Run `tyxtest index` locally/,
-  );
-
-  const cwd = project({ nonInteractive: "search", reruns: 0 });
-  const model = scriptedModel([JSON.stringify({ files: ["src/login.ts"] }), pass]);
-  const searched = await runCommand({ cwd, model, interactive: false, env: {} });
-  assert.equal(searched.results[0]?.verdict, "unsure");
-  assert.equal(fs.existsSync(path.join(cwd, "tyxtest/login/.index.json")), false);
-  assert.equal(model.requests.map((request) => request.purpose).join(","), "search,run");
+test("unindexed surfaces automatically index and judge in CI regardless of legacy nonInteractive setting", async () => {
+  for (const nonInteractive of ["fail", "search"]) {
+    const cwd = project({ nonInteractive, reruns: 0 });
+    const model = scriptedModel([JSON.stringify({ tests: [{ testId: "submit-exists", chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }] }), pass]);
+    const indexed = await runCommand({ cwd, model, interactive: false, env: {}, stdout: () => {}, stderr: () => {} });
+    assert.equal(indexed.results[0]?.verdict, "pass");
+    assert.equal(fs.existsSync(path.join(cwd, "tyxtest/.index.json")), true);
+    assert.equal(fs.existsSync(path.join(cwd, "tyxtest/login/.index.json")), false);
+    assert.equal(model.requests.map((request) => request.purpose).join(","), "index,run");
+  }
 });
 
 test("run delivers notes to the model and rejects cached judgments after a claim changes", async () => {
@@ -257,17 +254,18 @@ test("run delivers notes to the model and rejects cached judgments after a claim
   assert.match(model.requests[0]?.prompt ?? "", /Specification:\nIt must use the accessible label\./);
 
   fs.writeFileSync(surfaceFile, "---\nsurface: Login form\nentry: src/login.ts\n---\n- [submit-exists] There is a submit button\n  It must have keyboard support.\n");
+  const changedId = readTests(fs.readFileSync(surfaceFile, "utf8"), { testDiscovery: { mode: "bullets", headingLevel: 2, prefix: null } })[0]!.id;
   const warnings: string[] = [];
   const changed = await runCommand({
     cwd,
     env: {},
     stdout: () => {},
     stderr: (message) => warnings.push(message),
-    model: { async complete() { throw new Error("changed test must not reuse the old mapping or cache"); } },
+    model: scriptedModel([JSON.stringify({ tests: [{ testId: changedId, chunks: [{ path: "src/login.ts", symbol: "LoginForm" }] }] }), pass]),
   });
-  assert.equal(changed.results[0]?.verdict, "unsure");
+  assert.equal(changed.results[0]?.verdict, "pass");
   assert.equal(changed.results[0]?.cached, false);
-  assert.match(warnings.join("\n"), /index stale: test/);
+  assert.match(warnings.join("\n"), /auto-index: login: 1 new\/changed claims/);
 });
 
 test("run token footer reports per-run deltas for reused model clients", async () => {

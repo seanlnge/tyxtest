@@ -19,6 +19,7 @@ import { createModelClient } from "../model/providers.js";
 import { createRunProgress, type ProgressSink } from "../verdict/progress.js";
 import { formatReport, writeReports, type ReportedTest } from "../verdict/reporter.js";
 import { listSourceFiles } from "../closure/repo-files.js";
+import { indexCommand } from "./index-command.js";
 import { readTests } from "../surface/surface.js";
 import type { Citation, DecisionAnswer, DecisionRequest, DecisionScope, ModelClient, ModelConfig, ModelSource, ModelUsage, TyxtestConfig, Verdict } from "../config/types.js";
 import { aggregateVerdicts, EVIDENCE_OPTIONS, exitCodeFor, thresholdVerdict, VERDICT_OPTIONS } from "../verdict/verdict.js";
@@ -65,42 +66,19 @@ export async function runCommand(options: {
   const selected = filterSurfaces(surfaces, options.surfaces);
   if (selected.length === 0) throw new Error("No matching surfaces.");
 
-  const indexes = readIndexes(options.cwd);
+  let indexes = readIndexes(options.cwd);
   const titles = new Map(surfaces.map((surface) => [surface.relativeDir, surface.name]));
   const semanticContexts = new Map(surfaces.map((surface) => [surface.relativeDir, surfaceContextFor(surface, surfaces, config.markdown)]));
 
-  const diff = options.all || !config.ignoreUnchanged ? undefined : changedFiles(options.cwd, config.baseRef);
-  const lockfileHash = hashLockfiles(options.cwd);
-  const cacheFile = path.join(options.cwd, ".tyxtest", "verdict-cache.json");
-  const cache = loadCache(cacheFile);
-  let cacheDirty = false;
-  const showCached = options.showCached === true || config.showCached;
-  const jobs: Array<{ surface: string; id: string; text: string; notes?: string; cacheHit: boolean; run: () => Promise<ReportedTest> }> = [];
-  const cacheHitFor = (
-    test: { id: string; text: string; notes?: string },
-    closureHash: string,
-    chunkIds: string[],
-    judgmentContext: string,
-  ): boolean => {
-    if (options.all) return false;
-    const key = cacheKey({
-      testId: test.id,
-      testText: `${test.text}\n${test.notes ?? ""}`,
-      closureHash,
-      lockfileHash,
-      optionOrder: VERDICT_OPTIONS,
-      chunkIds,
-      judgmentContext,
-    });
-    const hit = cache.entries[key];
-    return Boolean(hit && hit.testId === test.id && isJudged(hit.verdict));
-  };
   let runner: ModelClient | null = null;
   let searcher: ModelClient | null = null;
   let escalator: ModelClient | null = null;
   const usageBaselines = new Map<ModelClient, ModelUsage | undefined>();
   const trackClient = (client: ModelClient): ModelClient => {
-    if (!usageBaselines.has(client)) usageBaselines.set(client, client.usage?.());
+    if (!usageBaselines.has(client)) {
+      const usage = client.usage?.();
+      usageBaselines.set(client, usage ? { ...usage } : undefined);
+    }
     return client;
   };
   const fallbackLabel =
@@ -127,6 +105,51 @@ export async function runCommand(options: {
     }
     return trackClient(escalator);
   };
+  const lazyEscalator: ModelClient = { complete: (request) => escalateClient().complete(request) };
+  const incremental = new Map<string, string[]>();
+  for (const surface of selected) {
+    const index = indexes.get(surface.relativeDir);
+    const tests = readTests(fs.readFileSync(surface.markdownPath, "utf8"), config.markdown);
+    if (!index && tests.length === 0) continue;
+    const semantic = semanticContexts.get(surface.relativeDir)!;
+    const contextChanged = Boolean(index?.contextHash && index.contextHash !== semantic.hash);
+    const changed = tests.filter((test) => {
+      const mapped = index?.tests?.find((item) => item.testId === test.id);
+      return !index || contextChanged || (mapped ? !indexedTestMatches(mapped, test) : !index.flows?.some((flow) => flow.testId === test.id));
+    }).map((test) => test.id);
+    const live = new Set(tests.map((test) => test.id));
+    const deleted = new Set([...(index?.tests ?? []), ...(index?.flows ?? [])].filter((item) => !live.has(item.testId)).map((item) => item.testId)).size;
+    if (!index || changed.length || deleted || contextChanged) {
+      incremental.set(surface.relativeDir, changed);
+      stderr(`auto-index: ${surface.relativeDir}: ${changed.length} new/changed claims, ${deleted} deleted claims`);
+    }
+  }
+  let indexUsage: ModelUsage | undefined;
+  if (incremental.size) {
+    await indexCommand({ cwd: options.cwd, config, env, interactive: false, incremental, model: indexClient,
+      prompter: { log: stderr, warn: stderr, async ask() { throw new Error("Automatic indexing must not prompt."); } } });
+    indexes = readIndexes(options.cwd);
+    if (searcher) indexUsage = runUsage(searcher, usageBaselines);
+    // Indexing is a separate phase even when injected clients alias runner/fallback clients.
+    for (const client of usageBaselines.keys()) {
+      const usage = client.usage?.();
+      usageBaselines.set(client, usage ? { ...usage } : undefined);
+    }
+  }
+  const diff = options.all || !config.ignoreUnchanged ? undefined : changedFiles(options.cwd, config.baseRef);
+  const lockfileHash = hashLockfiles(options.cwd);
+  const cacheFile = path.join(options.cwd, ".tyxtest", "verdict-cache.json");
+  const cache = loadCache(cacheFile);
+  let cacheDirty = false;
+  const showCached = options.showCached === true || config.showCached;
+  const jobs: Array<{ surface: string; id: string; text: string; notes?: string; cacheHit: boolean; run: () => Promise<ReportedTest> }> = [];
+  const cacheHitFor = (test: { id: string; text: string; notes?: string }, closureHash: string, chunkIds: string[], judgmentContext: string): boolean => {
+    if (options.all) return false;
+    const key = cacheKey({ testId: test.id, testText: `${test.text}\n${test.notes ?? ""}`, closureHash, lockfileHash,
+      optionOrder: VERDICT_OPTIONS, chunkIds, judgmentContext });
+    const hit = cache.entries[key];
+    return Boolean(hit && hit.testId === test.id && isJudged(hit.verdict));
+  };
 
   for (const selectedSurface of selected) {
     const semantic = semanticContexts.get(selectedSurface.relativeDir)!;
@@ -141,64 +164,12 @@ export async function runCommand(options: {
       diff.files.has(normalizeRel(path.relative(options.cwd, ancestor.markdownPath))),
     ));
 
-    if (!index) {
-      if (options.interactive === false && config.nonInteractive === "search") {
-        for (const test of tests) {
-          const searched = await searchClosure(indexClient(), options.cwd, surface, test);
-          if (diff && !semanticChanged && !affectsTest({ changed: diff.files, lockfileChanged: diff.lockfileChanged, closurePaths: searched.files.map((file) => file.path), surfacePath })) {
-            jobs.push({
-              surface: surface.relativeDir,
-              id: test.id,
-              text: test.text,
-              notes: test.notes,
-              cacheHit: false,
-              run: async () => skipped(surface, test),
-            });
-            continue;
-          }
-          jobs.push({
-            surface: surface.relativeDir,
-            id: test.id,
-            text: test.text,
-            notes: test.notes,
-            cacheHit: false,
-            run: () =>
-            judgeTest({
-              cwd: options.cwd,
-              config,
-              env,
-              stderr,
-              surface,
-              test,
-               judgmentContext: judgmentContextFingerprint(config, surface, [], [], semantic.text),
-              closure: searched,
-              symbols: [],
-              flows: [],
-              chunkRefs: null,
-              chunkIds: [],
-              runner: runnerClient(),
-              escalate: escalateClient(),
-              fallback: escalateClient(),
-              fallbackLabel,
-              indexModel: indexClient,
-              forceUnsure: true,
-              ignoreCache: options.all === true,
-              cache,
-              lockfileHash,
-              onCacheWrite: () => {
-                cacheDirty = true;
-              },
-            }),
-          });
-        }
-        continue;
-      }
-      throw new Error(`Surface "${surface.relativeDir}" is not indexed. Run \`tyxtest index\` locally.`);
-    }
+    if (!index) throw new Error(`Automatic indexing did not persist surface "${surface.relativeDir}".`);
 
     const surfaceContextStale = Boolean(index.contextHash && index.contextHash !== semantic.hash);
     if (surfaceContextStale) stderr(`index stale: semantic context for "${surface.relativeDir}" changed. Run \`tyxtest index\` to refresh it.`);
     for (const test of tests) {
+      const authoredChanged = incremental.get(surface.relativeDir)?.includes(test.id) === true;
       const mappedTest = index.tests?.find((item) => item.testId === test.id);
       const flowMapping = index.flows?.find((item) => item.testId === test.id);
       const hasChunkMapping = Boolean(mappedTest?.chunks.length || flowMapping?.steps.some((step) => step.chunks.length));
@@ -219,7 +190,7 @@ export async function runCommand(options: {
       if (priorFiles.length && (priorFiles.length !== testClosure.files.length || priorFiles.some((file) => !testClosure.files.some((liveFile) => liveFile.path === file.path)))) {
         stderr(`index stale: source context for "${surface.relativeDir}" changed; using fresh per-test context.`);
       }
-      if ((!mappedTest && !flowMapping) || !testMappingCurrent || !hasChunkMapping || surfaceContextStale || testClosure.missing || testClosure.files.length === 0) {
+      if ((!mappedTest && !flowMapping) || !testMappingCurrent || surfaceContextStale || testClosure.missing || (hasChunkMapping && testClosure.files.length === 0)) {
         stderr(`index stale: test "${test.text}" in "${surface.relativeDir}" has no current evidence mapping. Run \`tyxtest index\` to refresh it.`);
         jobs.push({
           surface: surface.relativeDir,
@@ -227,12 +198,14 @@ export async function runCommand(options: {
           text: test.text,
           notes: test.notes,
           cacheHit: false,
-          run: async () => resultOf({ surface, test }, "unsure", [], ["unsure"], "test is new or changed since indexing, or its source mapping or surface context is unavailable. Run `tyxtest index` to refresh its evidence mapping."),
+          run: async () => resultOf({ surface, test }, "unsure", [], ["unsure"], "indexed source mapping is unavailable. Run `tyxtest index` to refresh its evidence mapping."),
         });
         continue;
       }
       if (
         diff &&
+        hasChunkMapping &&
+        !authoredChanged &&
         !semanticChanged &&
         !affectsTest({
           changed: diff.files,
@@ -256,7 +229,7 @@ export async function runCommand(options: {
         id: test.id,
         text: test.text,
         notes: test.notes,
-        cacheHit: testMappingCurrent && cacheHitFor(test, testClosure.closureHash, chunkIds, judgmentContext),
+        cacheHit: !authoredChanged && testMappingCurrent && cacheHitFor(test, testClosure.closureHash, chunkIds, judgmentContext),
         run: () =>
         judgeTest({
           cwd: options.cwd,
@@ -266,19 +239,19 @@ export async function runCommand(options: {
           surface,
           test,
           judgmentContext,
-           closure: testClosure,
-           testContext: mappedTest?.context ?? [],
+          closure: testClosure,
+          testContext: mappedTest?.context ?? [],
           symbols: chunkSymbols(index, test.id),
           flows: index.flows ?? [],
           chunkRefs: chunkRefsFor(index, test.id),
           chunkIds,
           runner: runnerClient(),
-          escalate: escalateClient(),
-          fallback: escalateClient(),
+          escalate: lazyEscalator,
+          fallback: lazyEscalator,
           fallbackLabel,
           indexModel: indexClient,
           forceUnsure: false,
-          ignoreCache: options.all === true,
+          ignoreCache: options.all === true || authoredChanged,
           cache,
           lockfileHash,
           onCacheWrite: () => {
@@ -309,10 +282,10 @@ export async function runCommand(options: {
   }
   if (cacheDirty) saveCache(cacheFile, cache);
   if (progress) {
-    progress.finish(results, { unsureBlocks: config.unsureBlocks, verbose: options.verbose === true, elapsedMs: performance.now() - startedAt, runnerUsage: runUsage(runner, usageBaselines), fallbackUsage: fallbackUsage(runner, escalator, usageBaselines) });
+    progress.finish(results, { unsureBlocks: config.unsureBlocks, verbose: options.verbose === true, elapsedMs: performance.now() - startedAt, runnerUsage: runUsage(runner, usageBaselines), fallbackUsage: fallbackUsage(runner, escalator, usageBaselines), indexUsage });
   } else {
     const color = options.stdout ? false : process.stdout.hasColors?.() !== false && !process.env.NO_COLOR;
-    stdout(formatReport(results, config.unsureBlocks, options.verbose === true, showCached, titles, { elapsedMs: performance.now() - startedAt, runnerUsage: runUsage(runner, usageBaselines), fallbackUsage: fallbackUsage(runner, escalator, usageBaselines) }, color));
+    stdout(formatReport(results, config.unsureBlocks, options.verbose === true, showCached, titles, { elapsedMs: performance.now() - startedAt, runnerUsage: runUsage(runner, usageBaselines), fallbackUsage: fallbackUsage(runner, escalator, usageBaselines), indexUsage }, color));
   }
   const written = writeReports(path.join(options.cwd, ".tyxtest"), results, config.unsureBlocks);
   stdout(`JSON: ${path.relative(options.cwd, written.json)}\nJUnit: ${path.relative(options.cwd, written.junit)}\n`);
@@ -412,9 +385,7 @@ async function judgeTest(options: {
   const flowJudge = Boolean(flow && flow.steps.length > 0);
   const codeChunks = flowJudge ? [] : chunksFor(options);
   let judged: ReportedTest & { indexStale?: boolean; fallback?: string };
-  if (!flowJudge && options.chunkRefs !== null && options.chunkRefs.length === 0) {
-    judged = resultOf(options, "unsure", [], ["unsure"], "no chunks indexed for this test. Run `tyxtest index`.");
-  } else if (flowJudge && flow) {
+  if (flowJudge && flow) {
     judged = await judgeFlow(options, flow);
   } else if (kind === "llm") {
     judged = await judgeWithLlm(options, options.runner);
@@ -572,9 +543,6 @@ async function judgeWithDecision(options: {
     if (band === "pass") break;
   }
   const combined = aggregateVerdicts(attempts, options.config.verdictRule);
-  if (combined === "pass" && chunks.length === 0) {
-    return { ...resultOf(options, "unsure", [], attempts, "indexed evidence is no longer available. Run `tyxtest index` to refresh its mapping."), indexStale: true };
-  }
   if (combined === "unsure") {
     if (!options.config.escalate) {
       const betweenOnly = attempts.every((item) => item === "unsure");
@@ -641,7 +609,7 @@ async function judgeWithLlm(
         `Claim: ${options.test.text}`,
         options.test.notes ? `Specification:\n${options.test.notes}` : "",
         "Code:",
-        bundle || "(no code)",
+        bundle || "No related implementation was discoverable for this test. There are no indexed code chunks.",
       ]
         .filter(Boolean)
         .join("\n\n"),
@@ -690,7 +658,7 @@ function skipped(surface: Surface, test: { id: string; text: string; notes?: str
 }
 
 function renderClaim(surface: Surface, test: { id: string; text: string; notes?: string }, body: string): string {
-  return [`Surface: ${surface.name}`, surface.description, `Claim: ${test.text}`, test.notes ? `Specification:\n${test.notes}` : "", body || "(no code)"]
+  return [`Surface: ${surface.name}`, surface.description, `Claim: ${test.text}`, test.notes ? `Specification:\n${test.notes}` : "", body || "No related implementation was discoverable for this test. There are no indexed code chunks."]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -701,28 +669,6 @@ export function probabilityOf(probabilities: number[], options: readonly string[
     throw new Error(`Decision model did not return p(${name}) for options ${options.join(", ")}.`);
   }
   return probabilities[index];
-}
-
-async function searchClosure(
-  model: ModelClient,
-  cwd: string,
-  surface: Surface,
-  test: { text: string; notes?: string },
-): Promise<EvidenceContext> {
-  const listing = listSourceFiles(cwd);
-  const response = await model.complete({
-    purpose: "search",
-    system: 'Reply with JSON only: {"files":["relative/file.tsx"]}. Pick existing files that implement this specific test, including its callers and wiring. Surface nesting supplies product context, not file restrictions.',
-    prompt: `Surface: ${surface.name}\n${surface.description}\n\nClaim: ${test.text}${test.notes ? `\nNotes: ${test.notes}` : ""}\n\nFiles:\n${listing.join("\n")}`,
-  });
-  const record = asRecord(parseModelJson(response), "Search response");
-  const picked = asStringArray(record.files)
-    .map((file) => normalizeRel(file))
-    .filter((file) => listing.includes(file));
-  if (picked.length === 0) {
-    throw new Error(`Search found no files for "${surface.relativeDir}". Run \`tyxtest index\` locally.`);
-  }
-  return collectIndexedEvidence({ cwd, chunks: [], context: picked });
 }
 
 function decisionFailureReason(error: unknown): string {

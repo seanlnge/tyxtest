@@ -18,7 +18,7 @@ Usage:
 setup     write tyxtest/tyxtest.config.json, ignore .env, enable line-based index merging
 generate  propose the first surface tree when tyxtest/ has no surfaces
 index     map each test to repository-wide chunks and context; write .index.json. --pending applies suggestions; --fix reindexes all surfaces
-run       judge each test on its own fresh source context, with indexed evidence. Jev retries every non-pass; uncertain aggregates escalate once. The escalation model does not rerun.
+run       automatically index authored changes, then judge each test on its fresh selected evidence. Jev retries every non-pass; uncertain aggregates escalate once. The escalation model does not rerun.
 
 Config lives in tyxtest/tyxtest.config.json and names env vars. It must not contain API keys.
 `;
@@ -47,7 +47,7 @@ Map each test in the selected surfaces to chunks and source context across the r
 `,
   run: `tyxtest run [-A] [--non-interactive] [--verbose] [--cached] [surface...]
 
-Judge each test against its own fresh source context, including callers and dependencies around its indexed chunks. Indexed chunks select evidence, not the complete verdict context. Product-surface nesting supplies semantic context and never restricts source files. Jev scores the claim and its evidence in one request. Every non-pass is retried up to reruns more times (default 2, three attempts), stopping early on pass. Attempts combine using verdictRule (default worst); an unsure aggregate escalates once. The escalation model does not rerun; its single verdict is the test result. An LLM also runs once when the decision API fails or when runnerModel.kind is llm. Runs do not write .index.json.
+Judge each test against its own fresh source context, containing only indexed chunks and explicit context. Product-surface nesting supplies semantic context and never restricts source files. Before cache lookup or Git skipping, automatically index new/edited authored claims on selected surfaces, refresh all claims whose semantic context changed, and prune deleted claims without a model call. Existing current tests and flows are reused; preparation can update the shared .index.json in CI too, but never authored Markdown. Index failures stop before judgment. Missing source symbols still need explicit reindexing rather than endless automatic retries. Jev scores the claim and its evidence in one request. Every non-pass is retried up to reruns more times (default 2, three attempts), stopping early on pass. Attempts combine using verdictRule (default worst); an unsure aggregate escalates once. The escalation model does not rerun; its single verdict is the test result. An LLM also runs once when the decision API fails or when runnerModel.kind is llm.
 
   -A, --all           judge every test, ignoring the cache and unchanged skips
   --non-interactive   do not prompt
@@ -56,7 +56,7 @@ Judge each test against its own fresh source context, including callers and depe
   surface...          limit the run to these surface paths
 
 Cached tests are hidden unless --cached is set or showCached is true in tyxtest.config.json.
-Surface H1 titles appear in a nested directory tree. By default each H2 section is a test, including its complete Markdown body. Deeper headings, lists, and code blocks stay inside that test. Tests show their headings without internal hash IDs or discovery prefixes. Set markdown.testDiscovery.mode to bullets for bullet specs, markdown.testDiscovery.headingLevel to 2 through 6 for another heading depth, or markdown.testDiscovery.prefix to a literal, case-sensitive filter such as Test:. Nonmatching peer headings still end tests. The footer includes total time and provider-reported runner/fallback token usage.
+Surface H1 titles appear in a nested directory tree. By default each H2 section is a test, including its complete Markdown body. Deeper headings, lists, and code blocks stay inside that test. Tests show their headings without internal hash IDs or discovery prefixes. Set markdown.testDiscovery.mode to bullets for bullet specs, markdown.testDiscovery.headingLevel to 2 through 6 for another heading depth, or markdown.testDiscovery.prefix to a literal, case-sensitive filter such as Test:. Nonmatching peer headings still end tests. The footer includes total time and provider-reported runner/fallback token usage, plus separate index-model tokens when automatic preparation used the index model. Unchanged or deletion-only preparation does not initialize an index client.
 fallback (default true) sends a test to the escalation model when the decision API fails. The escalation model defaults to the index model. The report notes that fallback at the end.
 `,
 };
